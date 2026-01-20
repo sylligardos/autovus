@@ -125,9 +125,9 @@ class VUSNumpy():
         existence, time_existence = self.compute_existence(labels, sm, score, thresholds, start_with_edges, end_with_edges, safe_mask)
         (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)
 
-        # sns.lineplot(labels.T)
-        # plt.show()
-        # exit()
+        sns.lineplot(labels.T)
+        plt.show()
+        exit()
         
         
         # Add rest of FPs
