@@ -5,7 +5,7 @@
 @what: FF-VUS
 """
 
-from utils.utils import time_it
+# from utils.utils import time_it
 
 import numpy as np
 import math
@@ -13,6 +13,18 @@ from skimage.util.shape import view_as_windows as viewW
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+
+import time
+import functools
+def time_it(func):
+    """Wrapper to measure execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        elapsed_time = time.time() - start_time
+        return result, elapsed_time
+    return wrapper
 
 
 class VUSNumpy():
@@ -123,12 +135,7 @@ class VUSNumpy():
 
         labels, time_slopes = self.add_slopes(label, start_no_edges, end_no_edges, pos)
         existence, time_existence = self.compute_existence(labels, sm, score, thresholds, start_with_edges, end_with_edges, safe_mask)
-        (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)
-
-        sns.lineplot(labels.T)
-        plt.show()
-        exit()
-        
+        (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)     
         
         # Add rest of FPs
         if self.global_mask:

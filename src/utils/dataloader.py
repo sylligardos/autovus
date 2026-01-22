@@ -7,6 +7,7 @@
 
 
 
+import math
 import os
 import pandas as pd
 from tqdm import tqdm
@@ -30,6 +31,7 @@ class Dataloader:
 		self.raw_data_path = raw_data_path
 		self.window_data_path = window_data_path
 		self.feature_data_path = feature_data_path
+		self.split_file = split_file
 		if split_file is not None:
 			split_file = pd.read_csv(split_file, index_col=0)
 			self.train_set = list(split_file.loc['train_set'].dropna())
@@ -37,6 +39,23 @@ class Dataloader:
 				self.val_set = list(split_file.loc['val_set'].dropna())
 			else:
 				self.val_set = list(split_file.loc['test_set'].dropna())
+
+	def get_filenames(self):
+		"""
+		Get all filenames from all datasets.
+
+		Returns:
+			list: A list of all filenames across all datasets.
+		"""
+		filenames = []
+		datasets = self.get_dataset_names()
+		
+		for dataset in datasets:
+			path = os.path.join(self.raw_data_path, dataset)
+			files = [os.path.join(dataset, f) for f in os.listdir(path) if f.endswith('.out')]
+			filenames.extend(files)
+		
+		return filenames
 
 	def get_dataset_names(self):
 		"""
@@ -59,6 +78,8 @@ class Dataloader:
 		with Pool() as pool:
 			results = list(tqdm(pool.imap(self.load_timeseries, filenames), total=len(filenames), desc='Loading data'))
 
+		print(results)
+		exit()
 		timeseries, labels, fnames = zip(*results)
 			
 		return list(timeseries), list(labels), list(fnames)
@@ -257,8 +278,11 @@ class Dataloader:
 		return pd.read_csv(self.feature_data_path, index_col=0)
 		
 
-	def create_splits(data_path, split_per=0.7, seed=None, read_from_file=None):
-		"""Creates the splits of a single dataset to train, val, test subsets.
+	def create_splits(self, split_per=0.7, seed=None):
+		"""
+		USE CAREFULLY. ITS OUT DATED
+
+		Creates the splits of a single dataset to train, val, test subsets.
 		This is done either randomly, or with a seed, or read the split from a
 		file. Please see such files (the ones we used for our experiments) in 
 		the directory "experiments/supervised_splits" or 
@@ -284,7 +308,8 @@ class Dataloader:
 		train_set = []
 		val_set = []
 		test_set = []
-		dir_path = data_path
+		dir_path = self.raw_data_path
+		read_from_file = self.split_file
 		
 		# Set seed if provided
 		if seed: 
@@ -298,19 +323,16 @@ class Dataloader:
 			if 'train_set' in subsets and 'val_set' in subsets:
 				train_set = [x for x in df.loc['train_set'].tolist() if not isinstance(x, float) or not math.isnan(x)]
 				val_set = [x for x in df.loc['val_set'].tolist() if not isinstance(x, float) or not math.isnan(x)]
-
 				return train_set, val_set, test_set
 			elif 'train_set' in subsets and 'test_set' in subsets:
 				train_val_set = [x for x in df.loc['train_set'].tolist() if not isinstance(x, float) or not math.isnan(x)]
 				test_set = [x for x in df.loc['test_set'].tolist() if not isinstance(x, float) or not math.isnan(x)]
-
-				datasets = list(set([x.split('/')[0] for x in train_val_set]))
-				datasets.sort()
+				test_set = [x[:-4] for x in test_set]
 			else:
 				raise ValueError('Did not expect this type of file.')
-		else:
-			datasets = [x for x in os.listdir(dir_path) if os.path.isdir(os.path.join(dir_path, x))]
-			datasets.sort()
+		
+		datasets = [x for x in os.listdir(dir_path) if os.path.isdir(os.path.join(dir_path, x))]
+		datasets.sort()
 
 		if not os.path.isdir(dir_path):
 			dir_path = '/'.join(dir_path.split('/')[:-1])
@@ -318,12 +340,13 @@ class Dataloader:
 		# Random split of train & val sets
 		for dataset in datasets:
 			# Read file names
-			fnames = os.listdir(os.path.join(dir_path, dataset))
+			fnames = [os.path.join(dataset, x) for x in os.listdir(os.path.join(dir_path, dataset))]
+			if len(test_set):
+				fnames = [x for x in fnames if x not in test_set]
 
 			# Decide on the size of each subset
 			n_timeseries = len(fnames)
 			train_split = math.ceil(n_timeseries * split_per)
-			val_split = n_timeseries - train_split
 
 			# Select random files for each subset
 			train_idx = np.random.choice(
@@ -334,8 +357,16 @@ class Dataloader:
 			val_idx = np.asarray([x for x in range(n_timeseries) if x not in train_idx])
 
 			# Replace indexes with file names
-			train_set.extend([os.path.join(dataset, fnames[x]) for x in train_idx])
-			val_set.extend([os.path.join(dataset, fnames[x]) for x in val_idx])
+			train_set.extend([fnames[x] for x in train_idx])
+			val_set.extend([fnames[x] for x in val_idx])
+		
+		# Ensure no overlap between sets
+		all_train = set(train_set)
+		all_val = set(val_set)
+		all_test = set(test_set)
+
+		if all_train & all_val or all_train & all_test or all_val & all_test:
+			raise ValueError("Time series are shared between train, val, and test sets")
 		
 		return train_set, val_set, test_set
 

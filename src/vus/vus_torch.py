@@ -6,7 +6,7 @@
 """
 
 
-from utils.utils import time_it
+# from utils.utils import time_it
 
 import torch
 import numpy as np
@@ -16,6 +16,19 @@ import warnings
 # import matplotlib.pyplot as plt
 # import seaborn as sns
 
+
+    
+import time
+import functools
+def time_it(func):
+    """Wrapper to measure execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        elapsed_time = time.time() - start_time
+        return result, elapsed_time
+    return wrapper
 
 class VUSTorch():
     def __init__(

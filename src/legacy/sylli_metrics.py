@@ -13,9 +13,21 @@ from .utils.metrics import metricor
 from .basic_metrics import basic_metricor
 from .affiliation.generics import convert_vector_to_events
 from .affiliation.metrics import pr_from_events
-from utils.utils import auc_pr_wrapper, time_it
+# from utils.utils import auc_pr_wrapper, time_it
 
 import numpy as np
+
+import time
+import functools
+def time_it(func):
+    """Wrapper to measure execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        elapsed_time = time.time() - start_time
+        return result, elapsed_time
+    return wrapper
 
 
 @time_it
@@ -44,8 +56,8 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
         metric_value = sylli_affiliation(label, score)
     elif metric == 'range_auc' and slope_size is not None:
         metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size)
-    elif metric == 'auc':
-        metric_value = auc_pr_wrapper(label, score)
+    # elif metric == 'auc':
+    #     metric_value = auc_pr_wrapper(label, score)
     else:
         raise ValueError(f"Argument {metric} for metric is not valid or window size is required!")
     
