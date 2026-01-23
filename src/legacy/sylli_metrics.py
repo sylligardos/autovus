@@ -13,9 +13,9 @@ from .utils.metrics import metricor
 from .basic_metrics import basic_metricor
 from .affiliation.generics import convert_vector_to_events
 from .affiliation.metrics import pr_from_events
-# from utils.utils import auc_pr_wrapper, time_it
 
 import numpy as np
+from sklearn import metrics
 
 import time
 import functools
@@ -56,8 +56,31 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
         metric_value = sylli_affiliation(label, score)
     elif metric == 'range_auc' and slope_size is not None:
         metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size)
-    # elif metric == 'auc':
-    #     metric_value = auc_pr_wrapper(label, score)
+    elif metric == 'auc':
+        metric_value = metrics.average_precision_score(label, score)
+    elif metric == 'softed':
+        pass
+        # https://arxiv.org/pdf/2304.00439 
+        # github link not working
+        
+        # https://github.com/cefet-rj-dal/harbinger/blob/master/R/har_eval_soft.R
+        # Implmentation of the SoftED metric in R
+        # We can ask ChatGPT to impelement a quick script in R to load everything (same data) 
+        # compute the metric and save runtimes
+        # Do it in different project otherwise we will fck up this project
+
+    elif metric == 'ranged_precision':
+        pass
+        # https://github.com/CompML/PRTS?tab=readme-ov-file
+        # Unofficial implementation of Pr, Recall for time series (fscore and existence also here)
+    elif metric == 'ranged_recall':
+        pass
+    elif metric == 'existence':
+        pass
+    elif metric == 'auc_torch':
+        pass
+        # from torchmetrics.classification import AveragePrecision
+        # auc_pr_metric = AveragePrecision(task="binary")
     else:
         raise ValueError(f"Argument {metric} for metric is not valid or window size is required!")
     
