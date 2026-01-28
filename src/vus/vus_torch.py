@@ -158,8 +158,6 @@ class VUSTorch():
             (anomalies_found_c, total_anomalies_c), chunk_time_existence = self.compute_existence(labels_c, sm, safe_mask_c, normalize=False)
             (fp_c, fn_c, tp_c, positives_c, neg_c, fpr_c), chunk_time_conf = self.compute_confusion_matrix(labels_c, sm)
 
-            self.compare_conf_matrix(labels_c, sm)
-
             # Accumulate results and timing from each chunk
             tp += tp_c
             fp += fp_c

@@ -129,7 +129,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=1000)
+        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=10)
         data = zip(filenames, labels, scores)
     elif 'syn_' in  dataset:
         iterator = True
