@@ -457,8 +457,11 @@ class VUSTorch():
     def compute_confusion_matrix(self, labels: torch.Tensor, sm: torch.Tensor):
         if self.conf_matrix_mode == "dynamic":
             conf_matrix = self.conf_matrix_dyn(labels, sm)
-        else:
+        elif self.conf_matrix_mode == "dynamic_plus":
             conf_matrix = self.conf_matrix_dyn_plus(labels, sm)
+        else:
+            raise ValueError(f"Unknown conf_matrix_mode: {self.conf_matrix_mode}. Must be 'dynamic' or 'dynamic_plus'.")
+        
         fn, tp, positives = conf_matrix
 
         fp = sm.sum(axis=1) - tp
@@ -466,6 +469,18 @@ class VUSTorch():
         fpr = fp / negatives
 
         return fp, fn, tp, positives, negatives, fpr
+    
+
+    def conf_matrix_trivial(self, labels: torch.Tensor, sm: torch.Tensor):
+        label = labels[0]
+        sm_inv = ~sm
+
+        true_positives = np.matmul(labels, sm.T)
+        false_negatives = np.matmul(label, sm_inv.T)[:, np.newaxis].T
+
+        positives = ((true_positives + false_negatives) + label.sum()) / 2
+
+        return false_negatives, true_positives, positives
     
 
     def conf_matrix_dyn(self, labels: torch.Tensor, sm: torch.Tensor):
@@ -520,6 +535,42 @@ class VUSTorch():
 
         return false_negatives, true_positives, positives
     
+    def conf_matrix_cusparse(self, labels: torch.Tensor, sm: torch.Tensor):
+        """
+        Optimized confusion matrix computation using cuSparse (via PyTorch sparse tensors).
+        
+        This implementation converts the dense matrices to sparse CSR format and lets
+        cuSparse handle the sparse matrix operations without any manual masking.
+        
+        Args:
+            labels: Tensor of shape [2, T]
+            sm: Tensor of shape [S, T]
+        
+        Returns:
+            false_negatives: Tensor [S]
+            true_positives: Tensor [S]
+            positives: Tensor [S]
+        """
+        # Convert to sparse CSR format and let cuSparse do the work
+        labels_sparse = labels.to_sparse_csr().float()
+        sm_sparse = sm.to_sparse_csr().float()
+        
+        # Sparse matrix multiplication: [2, T] @ [T, S] = [2, S]
+        result = torch.sparse.mm(labels_sparse, sm_sparse.transpose(0, 1))
+        result_dense = result.to_dense()
+        
+        true_positives = result_dense[1]  # Second row (slope region)
+        
+        # False negatives: labels[0] @ (~sm).T
+        sm_inverted_sparse = (~sm).to_sparse_csr().float()
+        fn_result = torch.sparse.mm(labels_sparse[0:1], sm_inverted_sparse.transpose(0, 1))
+        false_negatives = fn_result.to_dense().squeeze()
+        
+        # Positives calculation
+        positives = ((true_positives + false_negatives) + labels[0].sum()).div(2)
+        
+        return false_negatives, true_positives, positives
+    
     @time_it
     def precision_recall_curve(self, tp: torch.Tensor, fp: torch.Tensor, positives: torch.Tensor, existence: torch.Tensor = None):
         """
@@ -554,3 +605,68 @@ class VUSTorch():
         height_pr = y[:, 1:]
         auc = torch.sum(torch.multiply(width_pr, height_pr), axis=1)
         return auc.mean()
+    
+
+    def compare_conf_matrix(self, labels=None, sm=None):
+        """
+        Comparison function to test all confusion matrix implementations.
+        """
+        # Create test data
+        torch.manual_seed(42)
+        T = 10000
+        S = 500
+        labels = torch.randint(0, 2, (2, T), dtype=torch.float32, device=self.device) if labels is None else labels
+        sm = torch.randint(0, 2, (S, T), dtype=torch.bool, device=self.device) if sm is None else sm
+
+        self.conf_matrix_cusparse(labels, sm)
+        exit()
+        
+        methods = {
+            'trivial': self.conf_matrix_trivial,
+            'dyn': self.conf_matrix_dyn,
+            'dyn_plus': self.conf_matrix_dyn_plus,
+            'cusparse': self.conf_matrix_cusparse,
+        }
+        
+        results = {}
+        timings = {}
+        
+        # Run each method and measure time
+        for name, method in methods.items():
+            try:
+                start = time.time()
+                fn, tp, pos = method(labels, sm)
+                elapsed = time.time() - start
+                results[name] = (fn, tp, pos)
+                timings[name] = elapsed
+                print(f"{name:12} - Time: {elapsed:.4f}s")
+            except Exception as e:
+                print(f"{name:12} - Error: {e}")
+        
+        # Compare results
+        print("\nResult comparison:")
+        reference_name = next(iter(results.keys()))
+        ref_fn, ref_tp, ref_pos = results[reference_name]
+        
+        for name, (fn, tp, pos) in results.items():
+            if name == reference_name:
+                continue
+            fn_match = torch.allclose(fn, ref_fn, atol=1e-5)
+            tp_match = torch.allclose(tp, ref_tp, atol=1e-5)
+            pos_match = torch.allclose(pos, ref_pos, atol=1e-5)
+            match_str = "✓" if (fn_match and tp_match and pos_match) else "✗"
+            print(f"{name:12} vs {reference_name}: {match_str}")
+        
+        # Speedup analysis
+        print("\nSpeedup relative to trivial:")
+        baseline = timings.get('trivial', timings[reference_name])
+        for name, elapsed in sorted(timings.items(), key=lambda x: x[1]):
+            speedup = baseline / elapsed
+            print(f"{name:12} - {speedup:.2f}x")
+
+
+
+
+if __name__ == "__main__":
+    vus = VUSTorch()
+    vus.compare_conf_matrix()

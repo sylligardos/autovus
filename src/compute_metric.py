@@ -40,7 +40,7 @@ def compute_metric(
             slopes=slopes,
             existence=existence,
             conf_matrix=conf_matrix,
-            side='both'
+            side='both',
         )
     elif metric == 'ff_vus_gpu':
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -83,10 +83,10 @@ def compute_metric(
                 if metric == 'ff_vus_gpu':
                     label, score = torch.tensor(label, device=device, dtype=torch.uint8), torch.tensor(score, device=device, dtype=torch.float16)
 
-                (metric_value, ff_vus_time_analysis), metric_time = ff_vus.compute(label, score)
+                (metric_value, ff_vus_time_analysis), metric_time = ff_vus.compute(label, score, thresholds=[0.5])
             curr_result.update(ff_vus_time_analysis)
         else:
-            if metric == 'range_auc' or metric == 'vus':
+            if metric in ['range_auc', 'vus', 'softed']:
                 curr_result.update({
                     'Slope size': slope_size
                 })
@@ -95,6 +95,9 @@ def compute_metric(
                     'Existence': True if existence != 'None' else False
                 })
             metric_value, metric_time = sylli_get_metrics(label, score, metric, slope_size, existence=True if existence != 'None' else False)
+            if metric == 'softed':
+                metric_value, metric_time = metric_value
+                metric_value = metric_value['F1']
 
         curr_result.update({
             'Metric': metric_name,
@@ -126,7 +129,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='YAHOO', n_timeseries=1000)
+        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='YAHOO', n_timeseries=100)
         data = zip(filenames, labels, scores)
     elif 'syn_' in  dataset:
         iterator = True
@@ -204,7 +207,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument('--dataset', type=str, required=True, help='Path or name of the dataset')
-    parser.add_argument('--metric', type=str, required=True, choices=['ff_vus', 'ff_vus_gpu', 'vus', 'rf', 'affiliation', 'range_auc', 'auc', 'all'], 
+    parser.add_argument('--metric', type=str, required=True, choices=['ff_vus', 'ff_vus_gpu', 'vus', 'rf', 'affiliation', 'range_auc', 'auc', 'softed', 'auc_gpu', 'all'], 
                         help='Metric to compute (e.g., VUS, AUC-PR, etc.)')
     parser.add_argument('--no_global_mask', action='store_true', help='Use global mask for metric computation')
     parser.add_argument('--slope_size', type=int, default=128, help='Number of slopes used for computation')

@@ -104,7 +104,7 @@ class VUSNumpy():
                 self.pos_slopes, self.neg_slopes = np.array([]), np.array([])
 
     @time_it
-    def compute(self, label, score):
+    def compute(self, label, score, thresholds=None):
         """
         Main computation function for the VUS metric.
 
@@ -119,7 +119,14 @@ class VUSNumpy():
         ((start_no_edges, end_no_edges), (start_with_edges, end_with_edges)), time_anom_coord = self.get_anomalies_coordinates(label)
         safe_mask, time_safe_mask = self.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=self.global_mask)
 
-        thresholds, time_thresholds = self.get_unique_thresholds(score)
+        if thresholds is None:
+            thresholds, time_thresholds = self.get_unique_thresholds(score)
+        else:
+            thresholds = np.array(thresholds) if isinstance(thresholds, list) else thresholds
+            if not isinstance(thresholds, np.ndarray):
+                raise ValueError(f"thresholds must be a list or numpy array, got {type(thresholds)}")
+            time_thresholds = 0
+
 
         # Apply global mask
         if self.global_mask:
