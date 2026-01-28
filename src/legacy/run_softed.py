@@ -5,7 +5,7 @@
 
 import numpy as np
 import time
-from rpy2.robjects import r, numpy2ri
+# from rpy2.robjects import r, numpy2ri
 
 # Load required R scripts from softed_metrics directory
 r('source("/home/sylli/Documents/ff-vus/src/softed_metrics/metrics.r")')
