@@ -630,6 +630,7 @@ class VUSTorch():
         timings = {}
         
         # Run each method and measure time
+        print(f'--------------------------{labels.shape, sm.shape}')
         for name, method in methods.items():
             try:
                 start = time.time()
@@ -643,7 +644,8 @@ class VUSTorch():
                 print(f"{name:12} - Time: {elapsed:.4f}s")
             except Exception as e:
                 print(f"{name:12} - Error: {e}")
-        
+            
+        return          
         # Compare results
         print("\nResult comparison:")
         reference_name = next(iter(results.keys()))
@@ -658,19 +660,20 @@ class VUSTorch():
             all_match = fn_match and tp_match and pos_match
             match_str = "✓" if all_match else "✗"
             print(f"{name:12} vs {reference_name}: {match_str}" + (f" -> {fn_match}, {tp_match}, {pos_match}" if not all_match else ""))
-            # if not all_match:
-            #     if not fn_match:
-            #         print("FN don't match")
-            #         print(ref_fn)
-            #         print(fn)
-            #     if not tp_match:
-            #         print("TP don't match")
-            #         print(ref_tp)
-            #         print(tp)
-            #     if not pos_match:
-            #         print("Pos don't match")
-            #         print(ref_pos)
-            #         print(pos)
+            if not all_match:
+                if not fn_match:
+                    print("FN don't match")
+                    print(ref_fn.mean())
+                    print(fn.mean())
+                if not tp_match:
+                    print("TP don't match")
+                    print(ref_tp.mean())
+                    print(tp.mean())
+                if not pos_match:
+                    print("Pos don't match")
+                    print(ref_pos.mean())
+                    print(pos.mean())
+                # raise ValueError('dont match')
         
         # Speedup analysis
         print("\nSpeedup relative to trivial:")

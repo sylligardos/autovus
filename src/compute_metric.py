@@ -55,7 +55,7 @@ def compute_metric(
             device=device,
         )
 
-    for filename, label, score in tqdm(data, desc=f'Computing {metric}'):
+    for filename, label, score in tqdm(data, desc=f'Computing {metric}', disable=True):
         length, n_anomalies, anomalies_avg_length = analyze_label(label)
         curr_result = {
             "Time series": filename,
@@ -129,7 +129,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=10)
+        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=1000)
         data = zip(filenames, labels, scores)
     elif 'syn_' in  dataset:
         iterator = True
