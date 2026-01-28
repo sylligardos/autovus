@@ -83,7 +83,7 @@ def compute_metric(
                 if metric == 'ff_vus_gpu':
                     label, score = torch.tensor(label, device=device, dtype=torch.uint8), torch.tensor(score, device=device, dtype=torch.float16)
 
-                (metric_value, ff_vus_time_analysis), metric_time = ff_vus.compute(label, score, thresholds=[0.5])
+                (metric_value, ff_vus_time_analysis), metric_time = ff_vus.compute(label, score)
             curr_result.update(ff_vus_time_analysis)
         else:
             if metric in ['range_auc', 'vus', 'softed']:
@@ -129,7 +129,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='YAHOO', n_timeseries=100)
+        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=10)
         data = zip(filenames, labels, scores)
     elif 'syn_' in  dataset:
         iterator = True

@@ -158,6 +158,8 @@ class VUSTorch():
             (anomalies_found_c, total_anomalies_c), chunk_time_existence = self.compute_existence(labels_c, sm, safe_mask_c, normalize=False)
             (fp_c, fn_c, tp_c, positives_c, neg_c, fpr_c), chunk_time_conf = self.compute_confusion_matrix(labels_c, sm)
 
+            self.compare_conf_matrix(labels_c, sm)
+
             # Accumulate results and timing from each chunk
             tp += tp_c
             fp += fp_c
@@ -484,18 +486,6 @@ class VUSTorch():
     
 
     def conf_matrix_dyn(self, labels: torch.Tensor, sm: torch.Tensor):
-        """
-        Computes confusion matrix using only the dynamic (non-always-one) region of the labels.
-        
-        Args:
-            labels: Tensor of shape [2, T], where labels[0] is binary and labels[1] encodes slope info.
-            sm: Tensor of shape [S, T], where S is the number of slopes (score masks).
-        
-        Returns:
-            false_negatives: Tensor [S]
-            true_positives: Tensor [S]
-            positives: Tensor [S]
-        """
         if not self.global_mask:
             mask = torch.where(labels[-1] > 0)[0]
             labels = labels[:, mask]
@@ -509,18 +499,6 @@ class VUSTorch():
         return false_negatives, true_positives, positives
 
     def conf_matrix_dyn_plus(self, labels: torch.Tensor, sm: torch.Tensor):
-        """
-        Optimized confusion matrix computation that avoids redundant work in always-one regions.
-        
-        Args:
-            labels: Tensor of shape [2, T]
-            sm: Tensor of shape [S, T]
-        
-        Returns:
-            false_negatives: Tensor [S]
-            true_positives: Tensor [S]
-            positives: Tensor [S]
-        """
         if not self.global_mask:
             slope_mask = torch.where(torch.logical_and(labels[-1] > 0, labels[-1] < 1))[0]
         else:
@@ -542,13 +520,13 @@ class VUSTorch():
         Uses COO (coordinate) format for flexible sparse operations that work on both CPU and CUDA.
         
         Args:
-            labels: Tensor of shape [2, T]
+            labels: Tensor of shape [n_slopes, T]
             sm: Tensor of shape [S, T]
         
         Returns:
             false_negatives: Tensor [S]
-            true_positives: Tensor [S]
-            positives: Tensor [S]
+            true_positives: Tensor [n_slopes, S]
+            positives: Tensor [n_slopes, S]
         """
         # Convert to sparse COO format for flexible operations
         sm_sparse = sm.to_sparse_coo().float()
@@ -557,9 +535,8 @@ class VUSTorch():
         sm_t_indices = torch.stack([sm_sparse.indices()[1], sm_sparse.indices()[0]])
         sm_t_sparse = torch.sparse_coo_tensor(sm_t_indices, sm_sparse.values(), (sm_sparse.shape[1], sm_sparse.shape[0]), device=sm_sparse.device)
         
-        # True positives: labels @ sm.T = [2, T] @ [T, S] = [2, S]
+        # True positives: labels @ sm.T = [n_slopes, T] @ [T, S] = [n_slopes, S]
         true_positives = torch.sparse.mm(labels.float(), sm_t_sparse)
-        true_positives = true_positives[1]  # Extract second row (slope region)
         
         # False negatives: labels[0] @ (~sm).T = [1, T] @ [T, S] = [1, S]
         sm_inv_sparse = (~sm).to_sparse_coo().float()
@@ -567,7 +544,7 @@ class VUSTorch():
         sm_inv_t_sparse = torch.sparse_coo_tensor(sm_inv_t_indices, sm_inv_sparse.values(), (sm_inv_sparse.shape[1], sm_inv_sparse.shape[0]), device=sm_inv_sparse.device)
         
         fn_result = torch.sparse.mm(labels[0:1].float(), sm_inv_t_sparse)
-        false_negatives = fn_result.squeeze()
+        false_negatives = fn_result.squeeze(0)  # [1, S] -> [S]
         
         # Positives calculation
         positives = ((true_positives + false_negatives) + labels[0].sum()).div(2)
@@ -621,32 +598,26 @@ class VUSTorch():
         labels = torch.randint(0, 2, (2, T), dtype=torch.float32, device=self.device) if labels is None else labels
         sm = torch.randint(0, 2, (S, T), dtype=torch.bool, device=self.device) if sm is None else sm
         
-        # Visualize labels and sm
+        # # Visualize labels and sm
         # import matplotlib.pyplot as plt
         # import seaborn as sns
 
-        # fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+        # fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
         # # Plot labels[0] as line plot
-        # axes[0].plot(labels[0].cpu().numpy())
-        # axes[0].set_title('Labels[0] (Binary Anomaly)')
+        # sns.lineplot(labels.cpu().numpy().T, ax=axes[0])
+        # axes[0].set_title('Labels (Binary Anomaly)')
         # axes[0].set_ylabel('Value')
 
-        # # Plot labels[1] as line plot
-        # axes[1].plot(labels[1].cpu().numpy())
-        # axes[1].set_title('Labels[1] (Slope Info)')
-        # axes[1].set_ylabel('Value')
-
         # # Plot sm mean across slopes as line plot
-        # sm_mean = sm.float().mean(dim=0).cpu().numpy()
-        # axes[2].plot(sm_mean)
-        # axes[2].set_title('Score Mask (Mean across slopes)')
-        # axes[2].set_ylabel('Mean Value')
-        # axes[2].set_xlabel('Time')
+        # axes[1].imshow(sm.cpu().numpy())
+        # axes[1].set_title('Score Mask')
+        # axes[1].set_ylabel('Value')
+        # axes[1].set_xlabel('Time')
 
         # plt.tight_layout()
         # plt.show()
-        # print(f"Labels shape: {labels.shape}, SM shape: {sm.shape}"))
+        # print(f"Labels shape: {labels.shape}, SM shape: {sm.shape}")
         
         methods = {
             'trivial': self.conf_matrix_trivial,
@@ -666,7 +637,6 @@ class VUSTorch():
                 fn = fn.float()
                 tp = tp.float()
                 pos = pos.float()
-                print(fn.shape, tp.shape, pos.shape)
                 elapsed = time.time() - start
                 results[name] = (fn, tp, pos)
                 timings[name] = elapsed
