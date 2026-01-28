@@ -475,8 +475,8 @@ class VUSTorch():
         label = labels[0]
         sm_inv = ~sm
 
-        true_positives = np.matmul(labels, sm.T)
-        false_negatives = np.matmul(label, sm_inv.T)[:, np.newaxis].T
+        true_positives = torch.matmul(labels, sm.float().T)
+        false_negatives = torch.matmul(label, sm_inv.float().T).unsqueeze(0)
 
         positives = ((true_positives + false_negatives) + label.sum()) / 2
 
@@ -537,10 +537,9 @@ class VUSTorch():
     
     def conf_matrix_cusparse(self, labels: torch.Tensor, sm: torch.Tensor):
         """
-        Optimized confusion matrix computation using cuSparse (via PyTorch sparse tensors).
+        Confusion matrix computation using cuSparse via PyTorch sparse tensors.
         
-        This implementation converts the dense matrices to sparse CSR format and lets
-        cuSparse handle the sparse matrix operations without any manual masking.
+        Uses COO (coordinate) format for flexible sparse operations that work on both CPU and CUDA.
         
         Args:
             labels: Tensor of shape [2, T]
@@ -551,20 +550,24 @@ class VUSTorch():
             true_positives: Tensor [S]
             positives: Tensor [S]
         """
-        # Convert to sparse CSR format and let cuSparse do the work
-        labels_sparse = labels.to_sparse_csr().float()
-        sm_sparse = sm.to_sparse_csr().float()
+        # Convert to sparse COO format for flexible operations
+        sm_sparse = sm.to_sparse_coo().float()
         
-        # Sparse matrix multiplication: [2, T] @ [T, S] = [2, S]
-        result = torch.sparse.mm(labels_sparse, sm_sparse.transpose(0, 1))
-        result_dense = result.to_dense()
+        # Transpose for @ operation: [S, T] -> [T, S]
+        sm_t_indices = torch.stack([sm_sparse.indices()[1], sm_sparse.indices()[0]])
+        sm_t_sparse = torch.sparse_coo_tensor(sm_t_indices, sm_sparse.values(), (sm_sparse.shape[1], sm_sparse.shape[0]), device=sm_sparse.device)
         
-        true_positives = result_dense[1]  # Second row (slope region)
+        # True positives: labels @ sm.T = [2, T] @ [T, S] = [2, S]
+        true_positives = torch.sparse.mm(labels.float(), sm_t_sparse)
+        true_positives = true_positives[1]  # Extract second row (slope region)
         
-        # False negatives: labels[0] @ (~sm).T
-        sm_inverted_sparse = (~sm).to_sparse_csr().float()
-        fn_result = torch.sparse.mm(labels_sparse[0:1], sm_inverted_sparse.transpose(0, 1))
-        false_negatives = fn_result.to_dense().squeeze()
+        # False negatives: labels[0] @ (~sm).T = [1, T] @ [T, S] = [1, S]
+        sm_inv_sparse = (~sm).to_sparse_coo().float()
+        sm_inv_t_indices = torch.stack([sm_inv_sparse.indices()[1], sm_inv_sparse.indices()[0]])
+        sm_inv_t_sparse = torch.sparse_coo_tensor(sm_inv_t_indices, sm_inv_sparse.values(), (sm_inv_sparse.shape[1], sm_inv_sparse.shape[0]), device=sm_inv_sparse.device)
+        
+        fn_result = torch.sparse.mm(labels[0:1].float(), sm_inv_t_sparse)
+        false_negatives = fn_result.squeeze()
         
         # Positives calculation
         positives = ((true_positives + false_negatives) + labels[0].sum()).div(2)
@@ -617,9 +620,33 @@ class VUSTorch():
         S = 500
         labels = torch.randint(0, 2, (2, T), dtype=torch.float32, device=self.device) if labels is None else labels
         sm = torch.randint(0, 2, (S, T), dtype=torch.bool, device=self.device) if sm is None else sm
+        
+        # Visualize labels and sm
+        # import matplotlib.pyplot as plt
+        # import seaborn as sns
 
-        self.conf_matrix_cusparse(labels, sm)
-        exit()
+        # fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+
+        # # Plot labels[0] as line plot
+        # axes[0].plot(labels[0].cpu().numpy())
+        # axes[0].set_title('Labels[0] (Binary Anomaly)')
+        # axes[0].set_ylabel('Value')
+
+        # # Plot labels[1] as line plot
+        # axes[1].plot(labels[1].cpu().numpy())
+        # axes[1].set_title('Labels[1] (Slope Info)')
+        # axes[1].set_ylabel('Value')
+
+        # # Plot sm mean across slopes as line plot
+        # sm_mean = sm.float().mean(dim=0).cpu().numpy()
+        # axes[2].plot(sm_mean)
+        # axes[2].set_title('Score Mask (Mean across slopes)')
+        # axes[2].set_ylabel('Mean Value')
+        # axes[2].set_xlabel('Time')
+
+        # plt.tight_layout()
+        # plt.show()
+        # print(f"Labels shape: {labels.shape}, SM shape: {sm.shape}"))
         
         methods = {
             'trivial': self.conf_matrix_trivial,
@@ -636,6 +663,10 @@ class VUSTorch():
             try:
                 start = time.time()
                 fn, tp, pos = method(labels, sm)
+                fn = fn.float()
+                tp = tp.float()
+                pos = pos.float()
+                print(fn.shape, tp.shape, pos.shape)
                 elapsed = time.time() - start
                 results[name] = (fn, tp, pos)
                 timings[name] = elapsed
@@ -654,8 +685,22 @@ class VUSTorch():
             fn_match = torch.allclose(fn, ref_fn, atol=1e-5)
             tp_match = torch.allclose(tp, ref_tp, atol=1e-5)
             pos_match = torch.allclose(pos, ref_pos, atol=1e-5)
-            match_str = "✓" if (fn_match and tp_match and pos_match) else "✗"
-            print(f"{name:12} vs {reference_name}: {match_str}")
+            all_match = fn_match and tp_match and pos_match
+            match_str = "✓" if all_match else "✗"
+            print(f"{name:12} vs {reference_name}: {match_str}" + (f" -> {fn_match}, {tp_match}, {pos_match}" if not all_match else ""))
+            # if not all_match:
+            #     if not fn_match:
+            #         print("FN don't match")
+            #         print(ref_fn)
+            #         print(fn)
+            #     if not tp_match:
+            #         print("TP don't match")
+            #         print(ref_tp)
+            #         print(tp)
+            #     if not pos_match:
+            #         print("Pos don't match")
+            #         print(ref_pos)
+            #         print(pos)
         
         # Speedup analysis
         print("\nSpeedup relative to trivial:")
