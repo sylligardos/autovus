@@ -13,7 +13,7 @@ from .utils.metrics import metricor
 from .basic_metrics import basic_metricor
 from .affiliation.generics import convert_vector_to_events
 from .affiliation.metrics import pr_from_events
-# from .run_softed import run_soft_metrics, visualize_soft_metric_mechanism
+from .run_softed import run_soft_metrics, visualize_soft_metric_mechanism
 
 import numpy as np
 from sklearn import metrics
@@ -22,12 +22,7 @@ from torchmetrics.classification import AveragePrecision
 import time
 import functools
 import torch
-
-# try:
-#     from prts import ts_precision, ts_recall
-# except ImportError:
-#     ts_precision = None
-#     ts_recall = None
+# from prts import ts_precision, ts_recall
 
 
 def time_it(func):
@@ -69,24 +64,20 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
         metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size)
     elif metric == 'auc':
         metric_value = metrics.average_precision_score(label, score)
-    # elif metric == 'softed':
-    #     score = score > 0.5
-    #     metric_value = run_soft_metrics(score, label, k=slope_size)
+    elif metric == 'softed':
+        score = score > 0.5
+        metric_value = run_soft_metrics(score, label, k=slope_size)
     elif metric == 'ranged_fscore':
-        # PRTS (Precision and Recall for Time Series)
-        # Using ts_precision and ts_recall with default parameters
-        if ts_precision is None or ts_recall is None:
-            raise ImportError("PRTS library not installed. Install with: pip install prts")
+        pass
+        # score = score > 0.5
         
-        # Use flat bias and reciprocal cardinality (standard settings)
-        precision = ts_precision(label, score, alpha=0.0, cardinality="reciprocal", bias="flat")
-        recall = ts_recall(label, score, alpha=0.0, cardinality="reciprocal", bias="flat")
+        # precision = ts_precision(label, score, alpha=0.0, cardinality="reciprocal", bias="flat")
+        # recall = ts_recall(label, score, alpha=0.0, cardinality="reciprocal", bias="flat")
         
-        # Calculate F1 score from precision and recall
-        if precision + recall > 0:
-            metric_value = 2 * ((precision * recall) / (precision + recall))
-        else:
-            metric_value = 0.0
+        # if precision + recall > 0:
+        #     metric_value = 2 * ((precision * recall) / (precision + recall))
+        # else:
+        #     metric_value = 0.0
     elif metric == 'ranged_recall':
         pass
     elif metric == 'existence':

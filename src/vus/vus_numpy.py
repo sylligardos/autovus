@@ -8,11 +8,14 @@
 # from utils.utils import time_it
 
 import numpy as np
+import pandas as pd
 import math
+import os
 from skimage.util.shape import view_as_windows as viewW
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+from scipy import sparse
 
 import time
 import functools
@@ -142,7 +145,9 @@ class VUSNumpy():
 
         labels, time_slopes = self.add_slopes(label, start_no_edges, end_no_edges, pos)
         existence, time_existence = self.compute_existence(labels, sm, score, thresholds, start_with_edges, end_with_edges, safe_mask)
-        (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)     
+        (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)
+        # self.compare_confusion_matrix(labels, sm)
+        self.compare_existence_computations(labels, sm, score, thresholds, start_with_edges, end_with_edges, save_path='experiments/existence_comparison/test.csv')
         
         # Add rest of FPs
         if self.global_mask:
@@ -424,6 +429,161 @@ class VUSNumpy():
 
         return existence
     
+    def compare_existence_computations(self, labels, sm, score, thresholds, start_points, end_points, n_runs=10, atol=1e-8, rtol=1e-5, save_path='experiments/existence_comparison_results.csv'):
+        """
+        Compare the results of trivial and optimized existence implementations,
+        check that they match and then compare runtimes and report results.
+        
+        Implementations:
+        - existence_trivial: Basic triple-nested loop approach
+        - existence_optimized: Optimized approach (~400x faster)
+        
+        :param labels: 2D numpy array of shape (n_slopes, T) with float values [0, 1]
+        :param sm: 2D boolean numpy array of shape (n_thresholds, T) - score mask
+        :param score: 1D numpy array of prediction scores
+        :param thresholds: 1D numpy array of threshold values
+        :param start_points: 1D numpy array of anomaly start points (with edges)
+        :param end_points: 1D numpy array of anomaly end points (with edges)
+        :param n_runs: Number of runs for timing (default: 10)
+        :param atol: Absolute tolerance for comparison (default: 1e-8)
+        :param rtol: Relative tolerance for comparison (default: 1e-5)
+        :param save_path: Path to save the results CSV file (default: 'experiments/existence_comparison_results.csv')
+        :returns: Dictionary with comparison results and timing information
+        """
+        implementations = {
+            'trivial': lambda: self.existence_trivial(labels, sm, thresholds, start_points, end_points),
+            'optimized': lambda: self.existence_optimized(labels, score, thresholds, start_points, end_points),
+        }
+        
+        results = {}
+        timings = {}
+        
+        # Run each implementation and collect results
+        for name, func in implementations.items():
+            times = []
+            for _ in range(n_runs):
+                start_time = time.time()
+                result = func()
+                elapsed = time.time() - start_time
+                times.append(elapsed)
+            
+            results[name] = result
+            timings[name] = {
+                'mean': np.mean(times),
+                'std': np.std(times),
+                'min': np.min(times),
+                'max': np.max(times),
+                'times': times
+            }
+        
+        # Compare results against trivial implementation (reference)
+        reference_name = 'trivial'
+        ref_result = results[reference_name]
+        
+        comparisons = {}
+        all_match = True
+        
+        for name, result in results.items():
+            if name == reference_name:
+                comparisons[name] = {'is_reference': True}
+                continue
+            
+            matches = np.allclose(result, ref_result, atol=atol, rtol=rtol)
+            max_diff = np.max(np.abs(result - ref_result))
+            mean_diff = np.mean(np.abs(result - ref_result))
+            
+            comparisons[name] = {
+                'matches': matches,
+                'max_diff': max_diff,
+                'mean_diff': mean_diff,
+            }
+            
+            if not matches:
+                all_match = False
+        
+        # Print report
+        print("=" * 70)
+        print("EXISTENCE IMPLEMENTATIONS COMPARISON")
+        print("=" * 70)
+        print(f"Input shapes: labels={labels.shape}, sm={sm.shape}, thresholds={thresholds.shape}")
+        print(f"Number of anomalies: {start_points.shape[0]}")
+        print(f"Number of timing runs: {n_runs}")
+        print()
+        
+        # Timing results
+        print("TIMING RESULTS (seconds):")
+        print("-" * 70)
+        print(f"{'Implementation':<15} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12}")
+        print("-" * 70)
+        for name, timing in timings.items():
+            print(f"{name:<15} {timing['mean']:>12.6f} {timing['std']:>12.6f} {timing['min']:>12.6f} {timing['max']:>12.6f}")
+        print()
+        
+        # Speedup relative to trivial
+        print("SPEEDUP (relative to trivial):")
+        print("-" * 70)
+        trivial_time = timings['trivial']['mean']
+        for name, timing in timings.items():
+            speedup = trivial_time / timing['mean']
+            print(f"{name:<15} {speedup:>10.2f}x")
+        print()
+        
+        # Correctness results
+        print("CORRECTNESS (compared to trivial):")
+        print("-" * 70)
+        for name, comp in comparisons.items():
+            if comp.get('is_reference'):
+                print(f"{name:<15} REFERENCE")
+            else:
+                status = "MATCH" if comp['matches'] else "DIFFER"
+                print(f"{name:<15} {status:<10} max_diff={comp['max_diff']:.2e} mean_diff={comp['mean_diff']:.2e}")
+        print()
+        
+        print("=" * 70)
+        print(f"OVERALL: {'ALL IMPLEMENTATIONS MATCH' if all_match else 'SOME IMPLEMENTATIONS DIFFER'}")
+        print("=" * 70)
+        
+        # Save results to DataFrame and append to file
+        row_data = {
+            'n_slopes': labels.shape[0],
+            'T': labels.shape[1],
+            'n_thresholds': thresholds.shape[0],
+            'n_anomalies': start_points.shape[0],
+            'n_runs': n_runs,
+            'trivial_mean': timings['trivial']['mean'],
+            'trivial_std': timings['trivial']['std'],
+            'trivial_min': timings['trivial']['min'],
+            'trivial_max': timings['trivial']['max'],
+            'optimized_mean': timings['optimized']['mean'],
+            'optimized_std': timings['optimized']['std'],
+            'optimized_min': timings['optimized']['min'],
+            'optimized_max': timings['optimized']['max'],
+            'speedup': timings['trivial']['mean'] / timings['optimized']['mean'],
+            'matches': comparisons['optimized']['matches'],
+            'max_diff': comparisons['optimized']['max_diff'],
+            'mean_diff': comparisons['optimized']['mean_diff'],
+        }
+        
+        new_row_df = pd.DataFrame([row_data])
+        
+        # Append to file or create new one
+        if os.path.exists(save_path):
+            existing_df = pd.read_csv(save_path)
+            combined_df = pd.concat([existing_df, new_row_df], ignore_index=True)
+            combined_df.to_csv(save_path, index=False)
+        else:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            new_row_df.to_csv(save_path, index=False)
+        
+        print(f"Results saved to {save_path}")
+        
+        return {
+            'all_match': all_match,
+            'comparisons': comparisons,
+            'timings': timings,
+            'results': results,
+        }
+    
     def no_existence(self, thresholds):
         return np.ones((self.n_slopes, len(thresholds)))
 
@@ -589,6 +749,131 @@ class VUSNumpy():
         fpr = fp / negatives
 
         return fp, fn, tp, positives, negatives, fpr
+    
+    def compare_confusion_matrix(self, labels, sm, n_runs=10, atol=1e-8, rtol=1e-5):
+        """
+        Compare the results of all 4 different confusion matrix implementations,
+        check that they match and then compare runtimes and report results.
+        
+        Implementations:
+        - conf_matrix_trivial: Basic numpy matrix multiplication
+        - conf_matrix_dyn: Dynamic masking approach
+        - conf_matrix_dyn_plus: Optimized dynamic approach with separate slope handling
+        - sparse_conf_matrix: Sparse matrix operations using scipy.sparse
+        
+        :param labels: 2D numpy array of shape (n_slopes, T) with float values [0, 1]
+        :param sm: 2D boolean numpy array of shape (n_thresholds, T) - score mask
+        :param n_runs: Number of runs for timing (default: 10)
+        :param atol: Absolute tolerance for comparison (default: 1e-8)
+        :param rtol: Relative tolerance for comparison (default: 1e-5)
+        :returns: Dictionary with comparison results and timing information
+        """
+        implementations = {
+            'trivial': self.conf_matrix_trivial,
+            'dynamic': self.conf_matrix_dyn,
+            'dynamic_plus': self.conf_matrix_dyn_plus,
+            'sparse': self.sparse_conf_matrix,
+        }
+        
+        results = {}
+        timings = {}
+        
+        # Run each implementation and collect results
+        for name, func in implementations.items():
+            # Warm-up run
+            fn, tp, positives = func(labels, sm)
+            results[name] = (fn, tp, positives)
+            
+            # Timing runs
+            times = []
+            for _ in range(n_runs):
+                start = time.time()
+                func(labels, sm)
+                times.append(time.time() - start)
+            timings[name] = {
+                'mean': np.mean(times),
+                'std': np.std(times),
+                'min': np.min(times),
+                'max': np.max(times),
+            }
+        
+        # Compare results against trivial implementation (reference)
+        reference_name = 'trivial'
+        ref_fn, ref_tp, ref_positives = results[reference_name]
+        
+        comparisons = {}
+        all_match = True
+        
+        for name, (fn, tp, positives) in results.items():
+            if name == reference_name:
+                continue
+            
+            fn_match = np.allclose(fn, ref_fn, atol=atol, rtol=rtol)
+            tp_match = np.allclose(tp, ref_tp, atol=atol, rtol=rtol)
+            positives_match = np.allclose(positives, ref_positives, atol=atol, rtol=rtol)
+            
+            matches = fn_match and tp_match and positives_match
+            all_match = all_match and matches
+            
+            comparisons[name] = {
+                'matches': matches,
+                'fn_match': fn_match,
+                'tp_match': tp_match,
+                'positives_match': positives_match,
+                'fn_max_diff': np.max(np.abs(fn - ref_fn)) if not fn_match else 0,
+                'tp_max_diff': np.max(np.abs(tp - ref_tp)) if not tp_match else 0,
+                'positives_max_diff': np.max(np.abs(positives - ref_positives)) if not positives_match else 0,
+            }
+        
+        # Print report
+        print("=" * 70)
+        print("CONFUSION MATRIX IMPLEMENTATIONS COMPARISON")
+        print("=" * 70)
+        print(f"Input shapes: labels={labels.shape}, sm={sm.shape}")
+        print(f"Number of timing runs: {n_runs}")
+        print()
+        
+        # Timing results
+        print("TIMING RESULTS (seconds):")
+        print("-" * 70)
+        print(f"{'Implementation':<15} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12}")
+        print("-" * 70)
+        for name, timing in timings.items():
+            print(f"{name:<15} {timing['mean']:>12.6f} {timing['std']:>12.6f} "
+                  f"{timing['min']:>12.6f} {timing['max']:>12.6f}")
+        print()
+        
+        # Speedup relative to trivial
+        print("SPEEDUP (relative to trivial):")
+        print("-" * 70)
+        trivial_time = timings['trivial']['mean']
+        for name, timing in timings.items():
+            speedup = trivial_time / timing['mean']
+            print(f"{name:<15} {speedup:>8.2f}x")
+        print()
+        
+        # Correctness results
+        print("CORRECTNESS (compared to trivial):")
+        print("-" * 70)
+        for name, comp in comparisons.items():
+            status = "✓ MATCH" if comp['matches'] else "✗ MISMATCH"
+            print(f"{name:<15} {status}")
+            if not comp['matches']:
+                print(f"  - fn_match: {comp['fn_match']} (max_diff: {comp['fn_max_diff']:.2e})")
+                print(f"  - tp_match: {comp['tp_match']} (max_diff: {comp['tp_max_diff']:.2e})")
+                print(f"  - positives_match: {comp['positives_match']} (max_diff: {comp['positives_max_diff']:.2e})")
+        print()
+        
+        print("=" * 70)
+        print(f"OVERALL: {'ALL IMPLEMENTATIONS MATCH' if all_match else 'SOME IMPLEMENTATIONS DIFFER'}")
+        print("=" * 70)
+        
+        return {
+            'all_match': all_match,
+            'comparisons': comparisons,
+            'timings': timings,
+            'results': results,
+        }
 
     def conf_matrix_trivial(self, labels, sm):
         label = labels[0]
@@ -597,6 +882,38 @@ class VUSNumpy():
         true_positives = np.matmul(labels, sm.T)
         false_negatives = np.matmul(label, sm_inv.T)[:, np.newaxis].T
 
+        positives = ((true_positives + false_negatives) + label.sum()) / 2
+
+        return false_negatives, true_positives, positives
+    
+    def sparse_conf_matrix(self, labels, sm):
+        """
+        Compute confusion matrix components using sparse matrix operations.
+        This is efficient when labels and/or sm contain many zeros.
+        
+        Uses scipy.sparse for efficient matrix multiplications on CPU.
+        Produces the same results as conf_matrix_trivial.
+        
+        :param labels: 2D numpy array of shape (n_slopes, T) with float values [0, 1]
+        :param sm: 2D boolean numpy array of shape (n_thresholds, T) - score mask
+        :returns: (false_negatives, true_positives, positives)
+        """
+        label = labels[0]
+        
+        # Convert to sparse CSR format (efficient for row slicing and matrix multiplication)
+        labels_sparse = sparse.csr_matrix(labels)
+        sm_sparse = sparse.csr_matrix(sm.astype(np.float64))
+        
+        # true_positives = labels @ sm.T -> shape (n_slopes, n_thresholds)
+        true_positives = labels_sparse.dot(sm_sparse.T).toarray()
+        
+        # For false_negatives, we need label @ (~sm).T -> shape (1, n_thresholds)
+        # label is 1D (T,), when converted to sparse becomes (1, T)
+        sm_inv_sparse = sparse.csr_matrix((~sm).astype(np.float64))
+        label_sparse = sparse.csr_matrix(label.astype(np.float64))
+        # Result: (1, T) @ (T, n_thresholds) = (1, n_thresholds)
+        false_negatives = label_sparse.dot(sm_inv_sparse.T).toarray()
+        
         positives = ((true_positives + false_negatives) + label.sum()) / 2
 
         return false_negatives, true_positives, positives

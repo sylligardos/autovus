@@ -55,7 +55,7 @@ def compute_metric(
             device=device,
         )
 
-    for filename, label, score in tqdm(data, desc=f'Computing {metric}', disable=True):
+    for filename, label, score in tqdm(data, desc=f'Computing {metric}'):
         length, n_anomalies, anomalies_avg_length = analyze_label(label)
         curr_result = {
             "Time series": filename,
@@ -129,7 +129,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='ECG', n_timeseries=10)
+        filenames, labels, scores, _ = load_tsb(testing=testing, dataset='KDD21', n_timeseries=10)
         data = zip(filenames, labels, scores)
     elif 'syn_' in  dataset:
         iterator = True
@@ -207,8 +207,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument('--dataset', type=str, required=True, help='Path or name of the dataset')
-    parser.add_argument('--metric', type=str, required=True, choices=['ff_vus', 'ff_vus_gpu', 'vus', 'rf', 'affiliation', 'range_auc', 'auc', 'softed', 'auc_gpu', 'all'], 
-                        help='Metric to compute (e.g., VUS, AUC-PR, etc.)')
+    parser.add_argument('--metric', type=str, required=True, help='Metric to compute (e.g., VUS, AUC-PR, etc.)') # choices=['ff_vus', 'ff_vus_gpu', 'vus', 'rf', 'affiliation', 'range_auc', 'auc', 'softed', 'auc_gpu', 'all']
     parser.add_argument('--no_global_mask', action='store_true', help='Use global mask for metric computation')
     parser.add_argument('--slope_size', type=int, default=128, help='Number of slopes used for computation')
     parser.add_argument('--step', type=int, default=1, help='Step size between slopes')

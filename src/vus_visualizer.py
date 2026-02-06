@@ -176,7 +176,7 @@ def gpu_existence_visualization():
 
     # (e) Cumulative max
     axes[2].plot(cm[-1, -2, :], color="dodgerblue", lw=2.5)
-    axes[2].set_title("(e) Cumulative Max of $\\overline{Score}$")
+    axes[2].set_title("(c) Cumulative Max of $\\overline{Score}$")
     axes[2].hlines(y=[1, 3], xmin=0, xmax=label.shape[0], linestyle='--', color='k', lw=1.5)
     axes[2].annotate('Step difference 2 $\\Rightarrow$ 1 anomaly missed', xy=(40, 1), xytext=(20, 1.6))
     axes[2].annotate('', xy=(18, 1), xytext=(18, 3), arrowprops=dict(arrowstyle='<->', linestyle='--', color='k', lw=1.5))
@@ -205,7 +205,7 @@ def gpu_buffers_visualization():
     fig, ax = plt.subplots(2, 1, sharex=True, figsize=(5, 2))
 
     sns.lineplot(labels.T, ax=ax[1], palette='flare_r', legend=False, linewidth=1.5)
-    ax[1].set_title('Label with 10 buffers')
+    ax[1].set_title(f'Label with {buffer_size} buffers')
     ax[0].plot(pos, color='k', linewidth=2.5)
     ax[0].set_title('Position sequence')
     ax[0].fill_between(range(T), 0, 200, where=pos >= buffer_size, color="pink", alpha=0.8, label="Not affected regions")
