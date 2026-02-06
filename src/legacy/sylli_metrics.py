@@ -13,7 +13,7 @@ from .utils.metrics import metricor
 from .basic_metrics import basic_metricor
 from .affiliation.generics import convert_vector_to_events
 from .affiliation.metrics import pr_from_events
-from .run_softed import run_soft_metrics, visualize_soft_metric_mechanism
+# from .run_softed import run_soft_metrics, visualize_soft_metric_mechanism
 
 import numpy as np
 from sklearn import metrics
@@ -64,9 +64,9 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
         metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size)
     elif metric == 'auc':
         metric_value = metrics.average_precision_score(label, score)
-    elif metric == 'softed':
-        score = score > 0.5
-        metric_value = run_soft_metrics(score, label, k=slope_size)
+    # elif metric == 'softed':
+    #     score = score > 0.5
+    #     metric_value = run_soft_metrics(score, label, k=slope_size)
     elif metric == 'ranged_fscore':
         pass
         # score = score > 0.5
