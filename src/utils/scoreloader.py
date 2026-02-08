@@ -1,7 +1,7 @@
 """
-@who: Emmanouil Sylligardos
-@where: Ecole Normale Superieur (ENS), Paris, France
-@when: PhD Candidate, 1st Year (2024)
+@who: Anonymous
+@where: Anonymous
+@when: Anonymous
 @what: Weighted Average MSAD
 """
 
