@@ -81,5 +81,5 @@ If you use this work, please cite the paper: "FF-VUS: A Freaking-Fast Evaluation
 
 ## Authors & License
 
-Authors: Emmanouil Sylligardos, Paul Boniol, John Paparrizos, Pierre Senellart  
+Authors: Anonymous  
 License: MIT

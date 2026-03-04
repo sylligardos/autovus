@@ -1,7 +1,7 @@
 """
-@who: Emmanouil Sylligardos
-@where: Ecole Normale Superieur (ENS), Paris, France
-@when: PhD Candidate, 2nd year (2025)
+@who: Anonymous
+@where: Anonymous
+@when: Anonymous
 @what: FF-VUS
 """
 
@@ -265,13 +265,11 @@ class VUSTorch():
             # if not torch.equal(sorted_thresholds, sorted_thresholds_whole):
             #     raise ValueError("Threshold arrays are not equal: sorted_thresholds and sorted_thresholds_whole differ.")
 
-        if len(thresholds) > max_thresholds:
-            warnings.warn(
-                f"Number of unique thresholds is {len(thresholds)}, which may slow down computation. "
-                "Consider rounding your scores to 2 decimals."
-            )
-
-
+        if len(sorted_thresholds) > max_thresholds:
+            n_thresholds = len(sorted_thresholds)
+            k = len(sorted_thresholds) // max_thresholds
+            sorted_thresholds = sorted_thresholds[::k]
+            # warnings.warn(f"Number of unique thresholds is {n_thresholds}. Rounding to {len(thresholds)}")
         return sorted_thresholds
     
     @time_it

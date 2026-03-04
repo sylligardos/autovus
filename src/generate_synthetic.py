@@ -1,7 +1,7 @@
 """
-@who: Emmanouil Sylligardos
-@where: Ecole Normale Superieur (ENS), Paris, France
-@when: PhD Candidate, 2nd year (2025)
+@who: Anonymous
+@where: Anonymous
+@when: Anonymous
 @what: FF-VUS
 """
 
