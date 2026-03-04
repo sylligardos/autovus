@@ -124,6 +124,7 @@ class VUSNumpy():
 
         if thresholds is None:
             thresholds, time_thresholds = self.get_unique_thresholds(score)
+            # thresholds, time_thresholds = self.get_pr_relevant_thresholds(label, score)
         else:
             thresholds = np.array(thresholds) if isinstance(thresholds, list) else thresholds
             if not isinstance(thresholds, np.ndarray):
@@ -188,11 +189,69 @@ class VUSNumpy():
         thresholds = np.sort(np.unique(score))[::-1]
         
         if len(thresholds) > max_thresholds:
-            warnings.warn(
-                f"Number of unique thresholds is {len(thresholds)}, which may slow down computation. "
-                "Consider rounding your scores to 2 decimals."
-            )
+            n_thresholds = len(thresholds)
+            k = len(thresholds) // max_thresholds
+            thresholds = thresholds[::k]
+            # warnings.warn(f"Number of unique thresholds is {n_thresholds}. Rounding to {len(thresholds)}")
         return thresholds
+
+    @time_it
+    def get_pr_relevant_thresholds(
+        self,
+        label,
+        score,
+        min_area=1e-8,          # None = no area pruning
+    ):
+        """
+        Returns PR-curve-relevant thresholds (descending),
+        optionally pruned by local area contribution.
+        """
+
+        # ---- Sort by score descending ----
+        order = np.argsort(score)[::-1]
+        score_sorted = score[order]
+        label_sorted = label[order]
+
+        # ---- Keep only distinct score values ----
+        distinct = np.r_[True, score_sorted[1:] != score_sorted[:-1]]
+        score_unique = score_sorted[distinct]
+
+        # ---- Cumulative TP and FP ----
+        tp = np.cumsum(label_sorted)[distinct]
+        fp = np.cumsum(1 - label_sorted)[distinct]
+
+        total_pos = label.sum()
+        recall = tp / total_pos
+        precision = tp / (tp + fp)
+
+        # ---- Convex-hull pruning (collinear removal) ----
+        keep = np.ones(len(precision), dtype=bool)
+
+        i = 1
+        while i < len(precision) - 1:
+            x1, y1 = recall[i - 1], precision[i - 1]
+            x2, y2 = recall[i], precision[i]
+            x3, y3 = recall[i + 1], precision[i + 1]
+
+            if (x3 - x1) * (y2 - y1) == (x2 - x1) * (y3 - y1):
+                keep[i] = False
+            i += 1
+
+        score_unique = score_unique[keep]
+        recall = recall[keep]
+        precision = precision[keep]
+
+        # ---- Optional area pruning ----
+        if min_area is not None and len(score_unique) > 2:
+            delta_recall = np.diff(recall)
+            avg_precision = (precision[:-1] + precision[1:]) / 2
+            local_area = delta_recall * avg_precision
+
+            area_keep = np.r_[True, local_area > min_area]
+
+            score_unique = score_unique[area_keep]
+
+        return score_unique[::10]
     
     @time_it
     def create_safe_mask(self, label, start_points, end_points, extra_safe=False):
@@ -631,8 +690,9 @@ class VUSNumpy():
         n_slopes, T = labels.shape
         n_thresholds = thresholds.shape[0]
         existence = np.zeros((n_slopes, n_thresholds))
-        thresholds_dict = {value: index for index, value in enumerate(thresholds)}
+        # thresholds_dict = {value: index for index, value in enumerate(thresholds)}
         n_anomalies = np.full(n_slopes, start_points.shape[0], dtype=int)
+        thresholds_inv = thresholds[::-1]
         
         all_start_points = np.maximum((np.tile(start_points, (n_slopes, 1)) - self.slope_values[:, None]), 0)
         all_end_points = np.minimum((np.tile(end_points, (n_slopes, 1)) + self.slope_values[:, None]), T - 1)
@@ -665,15 +725,18 @@ class VUSNumpy():
                 max_t = [score[og_start - argmax_t[0]], score[og_start + argmax_t[1]], score[og_end + argmax_t[2]]]
             
                 if max_t[1] >= max_t[0] and max_t[1] >= max_t[2]:   # Case middle
-                    threshold_index = thresholds_dict[max_t[1]]
+                    # threshold_index = thresholds_dict[max_t[1]]
+                    threshold_index = n_thresholds - np.searchsorted(thresholds_inv, max_t[1], side="right")
                     curr_existence[:i+1, threshold_index:] += 1
                     break
                 elif max_t[0] > max_t[2]:    # Case left
-                    threshold_index = thresholds_dict[max_t[0]]
+                    # threshold_index = thresholds_dict[max_t[0]]
+                    threshold_index = n_thresholds - np.searchsorted(thresholds_inv, max_t[0], side="right")
                     curr_existence[math.ceil(argmax_t[0] / self.step):i+1, threshold_index:] += 1
                     i = math.ceil(argmax_t[0] / self.step) - 1
                 elif max_t[2] >= max_t[0]:   # Case right
-                    threshold_index = thresholds_dict[max_t[2]]
+                    # threshold_index = thresholds_dict[max_t[2]]
+                    threshold_index = n_thresholds - np.searchsorted(thresholds_inv, max_t[2], side="right")
                     curr_existence[math.ceil(argmax_t[2] / self.step):i+1, threshold_index:] += 1
                     i = math.ceil(argmax_t[2] / self.step) - 1
 
