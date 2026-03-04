@@ -147,7 +147,7 @@ class VUSNumpy():
         existence, time_existence = self.compute_existence(labels, sm, score, thresholds, start_with_edges, end_with_edges, safe_mask)
         (fp, fn, tp, positives, negatives, fpr), time_confusion = self.compute_confusion_matrix(labels, sm)
         # self.compare_confusion_matrix(labels, sm)
-        self.compare_existence_computations(labels, sm, score, thresholds, start_with_edges, end_with_edges, save_path='experiments/existence_comparison/test.csv')
+        self.compare_existence_computations(labels, sm, score, thresholds, start_with_edges, end_with_edges, n_runs=1, save_path=f'experiments/existence_comparison/tsb_all_{self.slope_size}.csv')
         
         # Add rest of FPs
         if self.global_mask:
