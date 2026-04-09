@@ -1,5 +1,4 @@
 # Project-specific ignores
-references/
 run_interactive.sh
 /data
 /models
