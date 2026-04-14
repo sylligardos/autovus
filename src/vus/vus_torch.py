@@ -40,6 +40,7 @@ class VUSTorch():
             existence=True,
             conf_matrix='dynamic_plus',
             device=None,
+            cumulative=False,
         ):
         """
         Initialize the torch version of the VUS metric.
@@ -65,6 +66,7 @@ class VUSTorch():
 
         self.slope_size, self.step, self.zita, self.global_mask = slope_size, step, zita, global_mask    
         self.existence = False if existence == 'None'else existence
+        self.cumulative = cumulative
         
         self.slope_values = torch.arange(
             start=0, 
@@ -266,10 +268,8 @@ class VUSTorch():
             #     raise ValueError("Threshold arrays are not equal: sorted_thresholds and sorted_thresholds_whole differ.")
 
         if len(sorted_thresholds) > max_thresholds:
-            n_thresholds = len(sorted_thresholds)
             k = len(sorted_thresholds) // max_thresholds
             sorted_thresholds = sorted_thresholds[::k]
-            # warnings.warn(f"Number of unique thresholds is {n_thresholds}. Rounding to {len(thresholds)}")
         return sorted_thresholds
     
     @time_it
@@ -579,8 +579,12 @@ class VUSTorch():
     def auc(self, x, y):
         width_pr = x[:, 1:] - x[:, :-1]
         height_pr = y[:, 1:]
-        auc = torch.sum(torch.multiply(width_pr, height_pr), axis=1)
-        return auc.mean()
+        auc_per_slope = torch.sum(torch.multiply(width_pr, height_pr), axis=1)
+
+        if self.cumulative:
+            return torch.cumsum(auc_per_slope, dim=0) / torch.arange(1, len(auc_per_slope) + 1, device=auc_per_slope.device, dtype=auc_per_slope.dtype)
+        else:
+            return auc_per_slope.mean()
     
 
     def compare_conf_matrix(self, labels=None, sm=None):

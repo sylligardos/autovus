@@ -43,6 +43,7 @@ class VUSNumpy():
             interpolation='stepwise',
             metric='vus_pr',
             side='both',
+            cumulative=False,
         ):
         """
         Initialize the VUSNumpy metric class.
@@ -69,6 +70,7 @@ class VUSNumpy():
         
         self.slope_size, self.step = slope_size, step
         self.zita, self.global_mask = zita, global_mask
+        self.cumulative = cumulative
         
         self.slope_values = np.arange(self.slope_size + 1, step=self.step) if step > 0 else np.array([0])
         self.n_slopes = self.slope_values.shape[0]
@@ -189,10 +191,8 @@ class VUSNumpy():
         thresholds = np.sort(np.unique(score))[::-1]
         
         if len(thresholds) > max_thresholds:
-            n_thresholds = len(thresholds)
             k = len(thresholds) // max_thresholds
             thresholds = thresholds[::k]
-            # warnings.warn(f"Number of unique thresholds is {n_thresholds}. Rounding to {len(thresholds)}")
         return thresholds
 
     @time_it
@@ -1064,9 +1064,14 @@ class VUSNumpy():
     @time_it
     def auc(self, x, y):
         if self.interpolation_mode == 'linear':
-            return self.linear_interpolation(x, y).mean()
+            auc_per_slope = self.linear_interpolation(x, y)
         else:
-            return self.stepwise_interpolation(x, y).mean()
+            auc_per_slope = self.stepwise_interpolation(x, y)
+
+        if self.cumulative:
+            return np.cumsum(auc_per_slope) / np.arange(1, len(auc_per_slope) + 1)
+        else:
+            return auc_per_slope.mean()
 
     def linear_interpolation(self, x, y):
         return np.trapezoid(y, x, axis=1)
