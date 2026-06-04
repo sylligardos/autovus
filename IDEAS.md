@@ -28,6 +28,14 @@ _Last updated: 2026-05-23_
 
 ---
 
+## From Mingyi Huang
+
+> **Threshold sampling (→ §9):** VUS uses 300 thresholds by default to compute R-AUC ROC/PR values. This sampling can make the curve uneven — especially when the anomaly contains only one time point, the highest anomaly score is slightly shifted away from it, and the time series is very long. In such cases, threshold sampling may sometimes severely underestimate accuracy, e.g. from 1.0 to 0.01. Using all possible thresholds would be more accurate, but for computational efficiency the current strategy is also understandable and somewhat unavoidable.
+>
+> **Dense anomaly / buffer saturation (→ §11):** Algorithms like this may lead us to overestimate the capability of many detectors. For example, if you look at some STOCK time series in TSB-AD, the anomalies are extremely dense. After adding a buffer area around each individual anomaly, these buffered regions can end up covering almost the entire time series. As a result, the whole time series effectively receives nonzero labels, and anomaly scores of almost any shape can still obtain a reasonably high score.
+
+---
+
 ## Main Focus
 
 ### 9. All-threshold evaluation (eliminate the 300-threshold sampling artifact)

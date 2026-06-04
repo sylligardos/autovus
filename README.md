@@ -1,11 +1,3 @@
-## Ideas from Mingyi to review
-
-Mingyi Huang  [4:21 PM]
-I don’t think there are any remaining unsolved issues, at least from what I remember.
-There may still be some other issues that are hard to avoid. Since you are trying to make the computation more efficient, one thing you might want to consider is the thresholding strategy. In the current version, VUS uses 300 thresholds by default to compute the R-AUC ROC/PR values. This kind of sampling can make the curve uneven. This is especially problematic when the anomaly contains only one time point, the highest anomaly score is slightly shifted away from it, and the time series is very long. In such cases, threshold sampling may sometimes severely underestimate the accuracy, for example from 1.0 to 0.01.
-Using all possible thresholds would be more accurate, but for computational efficiency, the current strategy is also understandable and somewhat unavoidable. Maybe you could think about whether there is a better way to handle this trade-off.Mingyi Huang  [4:26 PM]
-Also, algorithms like this may lead us to overestimate the capability of many detectors. For example, if you look at some STOCK time series in TSB-AD, the anomalies are extremely dense. After adding a buffer area around each individual anomaly, these buffered regions can end up covering almost the entire time series. As a result, the whole time series effectively receives nonzero labels, and anomaly scores of almost any shape can still obtain a reasonably high score.
-
 # FF-VUS
 
 FF-VUS provides efficient implementations of the Volume Under the Precision-Recall Surface (VUS-PR) for time series anomaly detection. This repository accompanies the paper "FF-VUS: A Freaking-Fast Evaluation Measure for Time Series Anomaly Detection" and contains the exact CPU algorithm (FF-VUS) and a fully vectorized GPU approximation (FF-VUS-GPU).
