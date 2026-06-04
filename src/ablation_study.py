@@ -21,10 +21,25 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from utils.utils import load_tsb, analyze_label
+from tsbadparser import TSBADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from legacy.sylli_metrics import sylli_get_metrics
+
+
+def _analyze_label(label):
+    diff = np.diff(label)
+    starts = np.where(diff == 1)[0] + 1
+    ends = np.where(diff == -1)[0]
+    if len(label) > 0 and label[-1]:
+        ends = np.append(ends, len(label) - 1)
+    if len(label) > 0 and label[0]:
+        starts = np.append([0], starts)
+    n = int(starts.shape[0])
+    if n == 0:
+        return len(label), 0, 0.0
+    lengths = (ends + 1) - starts
+    return len(label), n, float(np.mean(lengths))
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +179,7 @@ def run_original_vus(filenames, labels, scores, slope_size, config_name="Origina
         desc=config_name,
         leave=False,
     ):
-        length, n_anomalies, anomalies_avg_length = analyze_label(label)
+        length, n_anomalies, anomalies_avg_length = _analyze_label(label)
 
         if label.shape != score.shape:
             min_len = min(label.shape[0], score.shape[0])
@@ -200,7 +215,7 @@ def run_single_config(vus_obj, filenames, labels, scores, backend, config_name):
         desc=config_name,
         leave=False,
     ):
-        length, n_anomalies, anomalies_avg_length = analyze_label(label)
+        length, n_anomalies, anomalies_avg_length = _analyze_label(label)
 
         if label.shape != score.shape:
             min_len = min(label.shape[0], score.shape[0])
@@ -382,11 +397,16 @@ def main():
     run_gpu = not args.cpu_only
 
     # Load data
-    print("Loading TSB-UAD dataset...")
+    print("Loading TSB-AD dataset...")
+    tsb = TSBADParser()
     if args.test:
-        filenames, labels, scores, _ = load_tsb(testing=True, dataset="ECG", n_timeseries=10)
+        filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
+        filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]
     else:
-        filenames, labels, scores, _ = load_tsb(testing=False)
+        filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
+    detectors = tsb.get_detectors()
+    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=detectors[:1])
+    scores = [s[0] for s in scores_grouped]
     print(f"Loaded {len(filenames)} time series")
 
     save_dir = os.path.join("experiments", args.experiment)

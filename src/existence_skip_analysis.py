@@ -15,8 +15,8 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
+from tsbadparser import TSBADParser
 from vus.vus_numpy import VUSNumpy
-from utils.utils import load_tsb
 
 
 def existence_optimized_instrumented(vus, labels, score, thresholds, start_points, end_points):
@@ -129,11 +129,17 @@ def main():
     parser.add_argument('--slope_size', type=int, default=128, help='Slope size to analyze (default: 128)')
     args = parser.parse_args()
 
-    print("Loading TSB-UAD benchmark...")
+    print("Loading TSB-AD benchmark...")
+    tsb = TSBADParser()
     if args.test:
-        filenames, labels, scores, detectors = load_tsb(testing=True, dataset='KDD21', n_timeseries=10)
+        filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
+        filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]
     else:
-        filenames, labels, scores, detectors = load_tsb(testing=False)
+        filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
+    all_detectors = tsb.get_detectors()
+    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=all_detectors[:1])
+    scores = [s[0] for s in scores_grouped]
+    detectors = [all_detectors[0]] * len(filenames)
 
     vus = VUSNumpy(
         slope_size=args.slope_size,

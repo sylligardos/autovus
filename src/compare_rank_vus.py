@@ -5,9 +5,8 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+from tsbadparser import TSBADParser
 from legacy.sylli_metrics import sylli_get_metrics
-from utils.dataloader import Dataloader
-from utils.scoreloader import Scoreloader
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 import os
@@ -19,23 +18,23 @@ def compare_rank(
         testing,
         experiment_dir,
 ):
-    # Load the TSB dataset for all detectors
-    dataloader = Dataloader(raw_data_path='data/raw')
-    datasets = dataloader.get_dataset_names() if dataset == 'all' else [dataset]
-    _, labels, filenames = dataloader.load_raw_datasets(datasets)
-    
-    if testing:
-        n_timeseries = 1
-        labels = labels[:n_timeseries]
-        filenames = filenames[:n_timeseries]
+    # Load the TSB-AD dataset for all detectors
+    tsb = TSBADParser()
+    if dataset == 'all':
+        filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
+    else:
+        filenames, timeseries, labels = tsb.load_timeseries(dataset=[dataset])
 
-    scoreloader = Scoreloader('data/scores')
-    detectors = scoreloader.get_detector_names()
-    all_scores, idx_failed = scoreloader.load_parallel(filenames, detectors=detectors)
-    labels, filenames = scoreloader.clean_failed_idx(labels, idx_failed), scoreloader.clean_failed_idx(filenames, idx_failed)
+    if testing:
+        filenames, timeseries, labels = filenames[:1], timeseries[:1], labels[:1]
+
+    detectors = tsb.get_detectors()
+    all_scores, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=detectors)
+    # all_scores[i] is shape (n_det, T) — note axis flip vs old Scoreloader (T, n_det)
+
     if len(all_scores) != len(labels) or len(all_scores) != len(filenames):
-        raise ValueError(f'Size of scores and labels is not the same, scores: {len(all_scores)}, labels: {len(labels)}, filenames: {len(filenames)}')
-    
+        raise ValueError(f'Size mismatch: scores={len(all_scores)}, labels={len(labels)}, filenames={len(filenames)}')
+
     # Call all 3 metrics, for every step
     step_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -43,12 +42,12 @@ def compare_rank(
     ffvusgpu = {}
     for step in step_sizes:
         ffvus[step] = VUSNumpy(
-            slope_size=512, 
-            step=step,  
+            slope_size=512,
+            step=step,
         )
-        
+
         ffvusgpu[step] = VUSTorch(
-            slope_size=512, 
+            slope_size=512,
             step=step,
             device=device,
         )
@@ -56,7 +55,8 @@ def compare_rank(
     # Compute the score for each instance
     results = []
     for i, (filename, label, scores) in tqdm(enumerate(zip(filenames, labels, all_scores)), desc=f'Comparing rank'):
-        for detector, score in zip(detectors, scores.T):
+        for det_idx, detector in enumerate(detectors):
+            score = scores[det_idx, :]  # (T,) — shape changed from old (T, n_det) to (n_det, T)
             if 'ff' in metric:
                 for step in step_sizes:
                     if metric == 'ffvus':

@@ -6,15 +6,10 @@
 """
 
 
-# from utils.utils import time_it
-
 import torch
 import numpy as np
 from tqdm import tqdm
 import psutil
-import warnings
-# import matplotlib.pyplot as plt
-# import seaborn as sns
 
 
     
@@ -41,6 +36,9 @@ class VUSTorch():
             conf_matrix='dynamic_plus',
             device=None,
             cumulative=False,
+            aggregation='mean',
+            thresholds='pr_relevant_fuzzy',
+            max_thresholds=None,
         ):
         """
         Initialize the torch version of the VUS metric.
@@ -54,7 +52,7 @@ class VUSTorch():
             raise ValueError(f"Error with step {step} and slope_size {slope_size}. Step can't be 0 with non-zero slope_size.")
         if (step > 0 and slope_size > 0) and (slope_size % step) != 0:
             raise ValueError(f"Error with the step: {step}. It should be a positive value and a perfect divider of the slope_size.")
-        if zita < 0 and zita > 1:
+        if zita < 0 or zita > 1:
             raise ValueError(f"Error with the zita: {zita}. It should be a value between 0 and 1.")
 
         if device is None:
@@ -83,6 +81,19 @@ class VUSTorch():
         else:
             raise ValueError(f"Unknown argument for conf_matrix: {conf_matrix}. 'conf_matrix' should be one of {conf_matrix_args}")
 
+        aggregation_args = ['mean', 'geometric', 'harmonic']
+        if aggregation in aggregation_args:
+            self.aggregation_mode = aggregation
+        else:
+            raise ValueError(f"Unknown argument for aggregation: {aggregation}. 'aggregation' should be one of {aggregation_args}")
+
+        thresholds_args = ['all_unique', 'subsampled', 'pr_relevant_fuzzy']
+        if thresholds in thresholds_args:
+            self.thresholds_mode = thresholds
+        else:
+            raise ValueError(f"Unknown argument for thresholds: {thresholds}. 'thresholds' should be one of {thresholds_args}")
+        self.max_thresholds = max_thresholds
+
         self.warmup()
 
     def warmup(self):
@@ -108,6 +119,12 @@ class VUSTorch():
             available_memory = psutil.virtual_memory().available
             self.max_memory_tokens = available_memory / divider
 
+    def _to_tensor(self, arr, dtype):
+        """Convert numpy array or plain tensor to a tensor on the correct device and dtype."""
+        if isinstance(arr, torch.Tensor):
+            return arr.to(device=self.device, dtype=dtype)
+        return torch.tensor(arr, dtype=dtype, device=self.device)
+
     @time_it
     def compute(self, label, score):
         """
@@ -115,12 +132,16 @@ class VUSTorch():
         
         TODO: There is still some error on MITDB two first time series, CPU version too
         """
+        label = self._to_tensor(label, dtype=torch.int8)
+        score = self._to_tensor(score, dtype=torch.float32)
+        if label.numel() == 0:
+            raise ValueError("label is empty — cannot compute VUS on an empty sequence")
         self.update_max_memory_tokens()
         fp = tp = positives = anomalies_found = total_anomalies = time_sm = time_slopes = time_existence = time_confusion = time_pos = 0
 
         ((_), (start_with_edges, end_with_edges)), time_anomalies_coord = self.get_anomalies_coordinates(label)
         safe_mask, time_safe_mask = self.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=self.global_mask)
-        (thresholds), time_thresholds = self.get_unique_thresholds(score)
+        thresholds, time_thresholds = self._dispatch_thresholds(label, score, safe_mask)
 
         # Apply global mask
         if self.global_mask:
@@ -250,7 +271,7 @@ class VUSTorch():
         return score >= thresholds[:, None]
     
     @time_it
-    def get_unique_thresholds(self, score, compute_in_chunks=True, max_thresholds=200):
+    def get_unique_thresholds(self, score, compute_in_chunks=True, max_thresholds=200, debug=False):
         if not compute_in_chunks:
             sorted_thresholds, _ = torch.sort(torch.unique(score), descending=True)
         else:
@@ -262,16 +283,85 @@ class VUSTorch():
             thresholds = torch.unique(all_unique)
             sorted_thresholds, _ = torch.sort(thresholds, descending=True)
 
-            # Check that the two threshold arrays are equal
-            # sorted_thresholds_whole, _ = torch.sort(torch.unique(score), descending=True)
-            # if not torch.equal(sorted_thresholds, sorted_thresholds_whole):
-            #     raise ValueError("Threshold arrays are not equal: sorted_thresholds and sorted_thresholds_whole differ.")
+            if debug:
+                sorted_thresholds_whole, _ = torch.sort(torch.unique(score), descending=True)
+                if not torch.equal(sorted_thresholds, sorted_thresholds_whole):
+                    raise ValueError("Chunked thresholds differ from full-sort thresholds.")
 
-        if len(sorted_thresholds) > max_thresholds:
+        if max_thresholds is not None and len(sorted_thresholds) > max_thresholds:
             k = len(sorted_thresholds) // max_thresholds
             sorted_thresholds = sorted_thresholds[::k]
         return sorted_thresholds
-    
+
+    @time_it
+    def get_pr_relevant_thresholds_vus(self, label_slopes, score, min_area=1e-8,
+                                       max_thresholds=1000):
+        """
+        VUS-aware threshold pruning (torch entry point, runs in numpy internally).
+
+        Keeps only the thresholds at which the cumulative fuzzy-TP changes.
+        Score levels that add only false positives leave recall unchanged and
+        contribute zero stepwise area, so they can be dropped without
+        affecting the resulting VUS value.
+
+        Tied scores are handled by indexing the cumulative TP at the LAST
+        occurrence of each unique score, so every tied true positive is
+        counted (FIRST-occurrence silently drops tied TPs on flat score
+        plateaus and yields near-zero VUS).
+
+        When the exact set exceeds max_thresholds, TP-space uniform sampling
+        is applied: N targets are placed evenly in [0, total_TP] and snapped
+        to the nearest real threshold via searchsorted. Worst-case AUC error
+        is bounded by 1/max_thresholds. Pass max_thresholds=None to disable.
+
+        Matches the rule in vus_numpy.get_pr_relevant_thresholds_vus.
+
+        label_slopes: float tensor of shape (n_slopes, T) — pass safe_mask.float().unsqueeze(0)
+                      as the proxy when called from _dispatch_thresholds.
+        score:        float tensor of shape (T,).
+        min_area:     kept for backward-compatible signature; unused.
+        Returns a 1-D descending torch tensor of thresholds.
+        """
+        ls_np = label_slopes.cpu().numpy()
+        sc_np = score.cpu().numpy()
+
+        fuzzy_label = ls_np.max(axis=0)
+
+        order = np.argsort(sc_np)[::-1]
+        score_sorted = sc_np[order]
+        fuzzy_sorted = fuzzy_label[order]
+
+        # LAST occurrence of each tied score.
+        distinct     = np.r_[score_sorted[:-1] != score_sorted[1:], True]
+        score_unique = score_sorted[distinct]
+
+        # Cumulative fuzzy-TP; keep thresholds where it changes.
+        tp = np.cumsum(fuzzy_sorted)[distinct]
+        keep = np.diff(tp, prepend=0.0) > 0
+        thresholds = score_unique[keep]
+
+        # TP-space uniform sampling cap.
+        if max_thresholds is not None and len(thresholds) > max_thresholds:
+            tp_kept = tp[keep]
+            total_tp = tp_kept[-1]
+            targets = np.linspace(0.0, total_tp, max_thresholds + 1)[1:]
+            idx = np.searchsorted(tp_kept, targets, side='left')
+            idx = np.clip(idx, 0, len(tp_kept) - 1)
+            idx = np.unique(idx)
+            thresholds = thresholds[idx]
+
+        return torch.tensor(thresholds, dtype=score.dtype, device=self.device)
+
+    def _dispatch_thresholds(self, _label, score, safe_mask):
+        if self.thresholds_mode == 'all_unique':
+            return self.get_unique_thresholds(score, max_thresholds=None)
+        elif self.thresholds_mode == 'subsampled':
+            cap = self.max_thresholds if self.max_thresholds is not None else 200
+            return self.get_unique_thresholds(score, max_thresholds=cap)
+        elif self.thresholds_mode == 'pr_relevant_fuzzy':
+            proxy = safe_mask.float().unsqueeze(0)  # (1, T)
+            return self.get_pr_relevant_thresholds_vus(proxy, score)
+
     @time_it
     def get_anomalies_coordinates(self, label: torch.Tensor):
         """
@@ -284,10 +374,15 @@ class VUSTorch():
             ((start_no_edges, end_no_edges), (start_with_edges, end_with_edges))
         """
         device = label.device
+        empty = torch.tensor([], dtype=torch.long, device=device)
+
+        if label.numel() == 0:
+            return (empty, empty), (empty, empty)
+
         diff = torch.diff(label)
         start_no_edges = torch.where(diff == 1)[0] + 1
         end_no_edges = torch.where(diff == -1)[0]
-        
+
         start_with_edges = torch.cat((torch.tensor([0], device=device), start_no_edges)) if label[0] else start_no_edges
         end_with_edges = torch.cat((end_no_edges, torch.tensor([len(label) - 1], device=device))) if label[-1] else end_no_edges
 
@@ -318,7 +413,10 @@ class VUSTorch():
 
         mask = mask.cumsum(dim=0)
         mask = mask > 0
-        mask[-1] = (end_safe_points[-1] == (length - 1)) if extra_safe else label[-1] # Why does it work?
+        if extra_safe:
+            mask[-1] = end_safe_points.numel() > 0 and end_safe_points[-1] == (length - 1)
+        else:
+            mask[-1] = label[-1]
 
         return mask
     
@@ -355,33 +453,79 @@ class VUSTorch():
             pos[label.bool()] = 0
             pos = torch.clamp(pos, max=self.slope_size)
 
-        return pos
+        return pos.to(torch.float32)
     
     @time_it
-    def add_slopes(self, label: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+    def add_slopes(self, label: torch.Tensor, pos: torch.Tensor, plot: bool = False) -> torch.Tensor:
         """
         Computes slope transformations for multiple slope values.
 
         Args:
             label: Binary tensor indicating anomaly regions (shape: [T], dtype: float).
             pos  : Distance to the nearest anomaly boundary (shape: [T]).
+            plot : If True, render a visual check of label, pos, and f_pos.
 
         Returns:
             Tensor of shape (n_slopes, T) with transformed slope values.
+
+        Optimizations vs. original:
+          - Drops always-True `valid_mask`. The per-row mask `sv >= pos` handles
+            out-of-buffer cells directly.
+          - Uses torch.where in a single fused write (no fancy-indexed writes,
+            no second masking pass, and inf-safe via per-cell selection).
+          - Precomputes (1 - zita) / slope_values once (cached on self).
         """
         device = label.device
         T = label.size(0)
 
-        valid_mask = (self.slope_size - pos) >= 0
-        slope_values = self.slope_values[1:, None]
-        pos = pos[None, :]
+        if not hasattr(self, '_inv_slope_factor'):
+            self._inv_slope_factor = (1.0 - self.zita) / self.slope_values[1:, None].to(torch.float32)
+
+        sv = self.slope_values[1:, None]   # (n_slopes-1, 1)
+        pos_b = pos[None, :]               # (1, T)
+        mask = sv >= pos_b                 # one mask, reused
+
         f_pos = torch.zeros((self.n_slopes, T), device=device)
         f_pos[0] = label
-
-        numerator = (1 - self.zita) * pos
-        f_pos[1:, valid_mask] = 1 - (numerator[:, valid_mask] / slope_values)
-        f_pos[1:][(slope_values - pos) < 0] = 0
+        f_pos[1:] = torch.where(mask, 1.0 - self._inv_slope_factor * pos_b, 0.0)
         f_pos[1:, label.bool()] = 1
+
+        if plot:
+            import matplotlib.pyplot as plt
+
+            label_np = label.detach().cpu().numpy()
+            pos_np   = pos.detach().cpu().float().numpy()
+            f_pos_np = f_pos.detach().cpu().numpy()
+            sv_np    = self.slope_values.detach().cpu().numpy()
+
+            fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
+
+            axes[0].plot(label_np, color='black', lw=1.5)
+            axes[0].set_title('Label')
+            axes[0].set_ylim(-0.1, 1.1)
+            axes[0].grid(alpha=0.2)
+
+            finite_mask = np.isfinite(pos_np)
+            axes[1].plot(np.where(finite_mask, pos_np, np.nan), color='steelblue', lw=1)
+            axes[1].axhline(self.slope_size, color='red', linestyle='--', alpha=0.5,
+                            label=f'slope_size={self.slope_size}')
+            axes[1].set_title('pos (distance to nearest anomaly boundary)')
+            axes[1].legend(loc='upper right', fontsize=8)
+            axes[1].grid(alpha=0.2)
+
+            cmap = plt.get_cmap('viridis', f_pos_np.shape[0])
+            for i in range(f_pos_np.shape[0]):
+                axes[2].plot(f_pos_np[i], color=cmap(i), lw=1, alpha=0.85,
+                             label=f'b={int(sv_np[i])}')
+            axes[2].set_title('f_pos (per-buffer slopes)')
+            axes[2].set_xlabel('time')
+            axes[2].set_ylim(-0.1, 1.1)
+            axes[2].grid(alpha=0.2)
+            if f_pos_np.shape[0] <= 12:
+                axes[2].legend(loc='upper right', fontsize=7, ncol=2)
+
+            plt.tight_layout()
+            plt.show()
 
         return f_pos
 
@@ -390,6 +534,13 @@ class VUSTorch():
         """
         PyTorch version of the existence matrix computation. This function uses an approximation fallback mechanism
         in case the memory requirements exceed the limit set by 'max_memory_tokens'.
+
+        This implements the same algorithm as VUSNumpy::existence_matrix (parallel/matrix approach).
+        The numpy default is existence_optimized, which is a different algorithm and diverges from
+        this one by ~0.005 on average in edge cases where the slopes of two anomalies meet on an
+        even step. The exact conditions and worst-case error are not yet characterized.
+        TODO: identify the edge cases, quantify the worst-case error, and decide if alignment is needed.
+        See vus_numpy.py::existence_matrix.
 
         Args:
             labels: Tensor of shape [s, T], binary anomaly label one for each slope.
@@ -496,9 +647,9 @@ class VUSTorch():
 
     def conf_matrix_dyn_plus(self, labels: torch.Tensor, sm: torch.Tensor):
         if not self.global_mask:
-            slope_mask = torch.where(torch.logical_and(labels[-1] > 0, labels[-1] < 1))[0]
+            slope_mask = torch.where((labels[0] == 0) & (labels[-1] > 0))[0]
         else:
-            slope_mask = torch.where(labels[-1] < 1)[0]
+            slope_mask = torch.where(labels[0] == 0)[0]
         label_as_mask = torch.where(labels[0])[0]
 
         initial_tps = sm[:, label_as_mask].sum(dim=1)
@@ -581,110 +732,24 @@ class VUSTorch():
         height_pr = y[:, 1:]
         auc_per_slope = torch.sum(torch.multiply(width_pr, height_pr), axis=1)
 
-        if self.cumulative:
-            return torch.cumsum(auc_per_slope, dim=0) / torch.arange(1, len(auc_per_slope) + 1, device=auc_per_slope.device, dtype=auc_per_slope.dtype)
+        n = len(auc_per_slope)
+        indices = torch.arange(1, n + 1, device=auc_per_slope.device, dtype=auc_per_slope.dtype)
+
+        if self.aggregation_mode == 'geometric':
+            log_auc = torch.log(torch.clamp(auc_per_slope, min=1e-10))
+            if self.cumulative:
+                return torch.exp(torch.cumsum(log_auc, dim=0) / indices)
+            else:
+                return torch.exp(log_auc.mean())
+        elif self.aggregation_mode == 'harmonic':
+            inv_auc = 1.0 / torch.clamp(auc_per_slope, min=1e-10)
+            if self.cumulative:
+                return indices / torch.cumsum(inv_auc, dim=0)
+            else:
+                return n / inv_auc.sum()
         else:
-            return auc_per_slope.mean()
+            if self.cumulative:
+                return torch.cumsum(auc_per_slope, dim=0) / indices
+            else:
+                return auc_per_slope.mean()
     
-
-    def compare_conf_matrix(self, labels=None, sm=None):
-        """
-        Comparison function to test all confusion matrix implementations.
-        """
-        # Create test data
-        torch.manual_seed(42)
-        T = 10000
-        S = 500
-        labels = torch.randint(0, 2, (2, T), dtype=torch.float32, device=self.device) if labels is None else labels
-        sm = torch.randint(0, 2, (S, T), dtype=torch.bool, device=self.device) if sm is None else sm
-        
-        # # Visualize labels and sm
-        # import matplotlib.pyplot as plt
-        # import seaborn as sns
-
-        # fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-
-        # # Plot labels[0] as line plot
-        # sns.lineplot(labels.cpu().numpy().T, ax=axes[0])
-        # axes[0].set_title('Labels (Binary Anomaly)')
-        # axes[0].set_ylabel('Value')
-
-        # # Plot sm mean across slopes as line plot
-        # axes[1].imshow(sm.cpu().numpy())
-        # axes[1].set_title('Score Mask')
-        # axes[1].set_ylabel('Value')
-        # axes[1].set_xlabel('Time')
-
-        # plt.tight_layout()
-        # plt.show()
-        # print(f"Labels shape: {labels.shape}, SM shape: {sm.shape}")
-        
-        methods = {
-            'trivial': self.conf_matrix_trivial,
-            'dyn': self.conf_matrix_dyn,
-            'dyn_plus': self.conf_matrix_dyn_plus,
-            'cusparse': self.conf_matrix_cusparse,
-        }
-        
-        results = {}
-        timings = {}
-        
-        # Run each method and measure time
-        print(f'--------------------------{labels.shape, sm.shape}')
-        for name, method in methods.items():
-            try:
-                start = time.time()
-                fn, tp, pos = method(labels, sm)
-                fn = fn.float()
-                tp = tp.float()
-                pos = pos.float()
-                elapsed = time.time() - start
-                results[name] = (fn, tp, pos)
-                timings[name] = elapsed
-                print(f"{name:12} - Time: {elapsed:.4f}s")
-            except Exception as e:
-                print(f"{name:12} - Error: {e}")
-            
-        return          
-        # Compare results
-        print("\nResult comparison:")
-        reference_name = next(iter(results.keys()))
-        ref_fn, ref_tp, ref_pos = results[reference_name]
-        
-        for name, (fn, tp, pos) in results.items():
-            if name == reference_name:
-                continue
-            fn_match = torch.allclose(fn, ref_fn, atol=1e-5)
-            tp_match = torch.allclose(tp, ref_tp, atol=1e-5)
-            pos_match = torch.allclose(pos, ref_pos, atol=1e-5)
-            all_match = fn_match and tp_match and pos_match
-            match_str = "✓" if all_match else "✗"
-            print(f"{name:12} vs {reference_name}: {match_str}" + (f" -> {fn_match}, {tp_match}, {pos_match}" if not all_match else ""))
-            if not all_match:
-                if not fn_match:
-                    print("FN don't match")
-                    print(ref_fn.mean())
-                    print(fn.mean())
-                if not tp_match:
-                    print("TP don't match")
-                    print(ref_tp.mean())
-                    print(tp.mean())
-                if not pos_match:
-                    print("Pos don't match")
-                    print(ref_pos.mean())
-                    print(pos.mean())
-                # raise ValueError('dont match')
-        
-        # Speedup analysis
-        print("\nSpeedup relative to trivial:")
-        baseline = timings.get('trivial', timings[reference_name])
-        for name, elapsed in sorted(timings.items(), key=lambda x: x[1]):
-            speedup = baseline / elapsed
-            print(f"{name:12} - {speedup:.2f}x")
-
-
-
-
-if __name__ == "__main__":
-    vus = VUSTorch()
-    vus.compare_conf_matrix()

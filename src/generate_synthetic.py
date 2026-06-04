@@ -15,7 +15,19 @@ import os
 import time
 from datetime import datetime
 import pandas as pd
-from utils.utils import analyze_label
+def _analyze_label(label):
+    diff = np.diff(label)
+    starts = np.where(diff == 1)[0] + 1
+    ends = np.where(diff == -1)[0]
+    if len(label) > 0 and label[-1]:
+        ends = np.append(ends, len(label) - 1)
+    if len(label) > 0 and label[0]:
+        starts = np.append([0], starts)
+    n = int(starts.shape[0])
+    if n == 0:
+        return len(label), 0, 0.0
+    lengths = (ends + 1) - starts
+    return len(label), n, float(np.mean(lengths))
 
 # Check that the actual values are within 10% of the once we want. if not repeat
 def generate_synthetic_labels(length=10000, n_anomalies=10, avg_anomaly_length=100, tolerance=0.1, max_attempts=100):
@@ -42,7 +54,7 @@ def generate_synthetic_labels(length=10000, n_anomalies=10, avg_anomaly_length=1
         for i, s, e in tqdm(zip(anomalies_index, start_points, end_points), total=len(start_points), desc="Generating the label", disable=True):
             label[s: e] = 1
 
-        actual_length, actual_n_anomalies, actual_avg_anomaly_length = analyze_label(label)
+        actual_length, actual_n_anomalies, actual_avg_anomaly_length = _analyze_label(label)
         
         n_anomalies_within_tolerance = abs(actual_n_anomalies - n_anomalies) <= tolerance * n_anomalies
         avg_anomaly_length_within_tolerance = abs(actual_avg_anomaly_length - avg_anomaly_length) <= tolerance * avg_anomaly_length

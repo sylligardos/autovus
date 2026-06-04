@@ -8,6 +8,7 @@
 import pandas as pd
 from tqdm import tqdm
 import argparse
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -15,11 +16,9 @@ from matplotlib.gridspec import GridSpec
 import torch
 import os
 
+from tsbadparser import TSBADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
-from utils.dataloader import Dataloader
-from utils.scoreloader import Scoreloader
-from utils.utils import load_tsb
 
 
 def main(plot):
@@ -35,6 +34,8 @@ def main(plot):
         steps_visualization()
     elif plot == 'global_mask':
         global_mask_visualization()
+    elif plot == 'progressive_vus':
+        progressive_vus_visualization()
     else:
         raise ValueError('Unknown plot type')
 
@@ -45,14 +46,9 @@ def global_mask_visualization():
     ffvus = VUSNumpy(buffer_size)
     global_mask_choices = [False, True]
 
-    dataloader = Dataloader(os.path.join('data', 'raw'))
-    x, y, fn = dataloader.load_raw_datasets(datasets=['MGAB']) # dataloader.get_dataset_names()
-    ts_index = -1
-    max_len = -1
-    for i, ts in enumerate(x):
-        if len(ts) > max_len:
-            ts_index = i
-            max_len = len(ts)
+    tsb = TSBADParser()
+    fn, _, y = tsb.load_timeseries(dataset=['MGAB'])
+    ts_index = max(range(len(y)), key=lambda i: len(y[i]))
     label = y[ts_index]
     print(f"Time series '{fn[ts_index]}', Length: {len(label)}")
     # label = torch.tensor([0]*150 + [1]*20 + [0]*200 + [1]*50 + [0]*250 + [1]*20 + [0]*200, dtype=torch.float32)
@@ -329,17 +325,213 @@ def plot_existence_toy(labels, score, existence, thresholds, filename, title_suf
 
     
 
+# ---------------------------------------------------------------------------
+# Progressive VUS
+# ---------------------------------------------------------------------------
+
+def _compute_progressive(label, score, slope_size, backend):
+    if backend == 'torch':
+        import torch as _torch
+        device = 'cuda' if _torch.cuda.is_available() else 'cpu'
+        label_t = _torch.tensor(label, device=device, dtype=_torch.uint8)
+        score_t = _torch.tensor(score, device=device, dtype=_torch.float32)
+        vus = VUSTorch(slope_size=slope_size, step=1, cumulative=True, device=device)
+        with _torch.no_grad():
+            (cum_values, _), _ = vus.compute(label_t, score_t)
+        return cum_values.cpu().numpy()
+    else:
+        vus = VUSNumpy(slope_size=slope_size, step=1, cumulative=True)
+        (cum_values, _), _ = vus.compute(label, score)
+        return cum_values
+
+
+def _plot_single_progressive(fname, label, score, curve, L, backend, output, ts_values=None, detector=None):
+    n_rows = 4 if ts_values is not None else 3
+    height_ratios = [1.2, 0.7, 0.7, 2.5] if ts_values is not None else [1, 1, 3]
+    fig = plt.figure(figsize=(14, 10 if ts_values is not None else 9))
+    gs = GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios, hspace=0.45)
+
+    row = 0
+    if ts_values is not None:
+        ax_ts = fig.add_subplot(gs[row]); row += 1
+    ax_label = fig.add_subplot(gs[row], sharex=(ax_ts if ts_values is not None else None)); row += 1
+    ax_score = fig.add_subplot(gs[row], sharex=ax_label); row += 1
+    ax_vus = fig.add_subplot(gs[row])
+
+    t = np.arange(len(label))
+
+    if ts_values is not None:
+        ax_ts.plot(t, ts_values, linewidth=0.7, color='dimgray', label='Time series')
+        ax_ts.fill_between(t, ts_values.min(), ts_values.max(),
+                           where=label.astype(bool), alpha=0.25, color='tomato', label='Anomaly region')
+        ax_ts.set_ylabel('Value', fontsize=10)
+        ax_ts.legend(loc='upper right', fontsize=8)
+        ax_ts.set_title(
+            f'{os.path.basename(fname)}  |  length={len(label)}  anomaly_ratio={label.mean():.3f}', fontsize=11
+        )
+        ax_ts.tick_params(labelbottom=False)
+
+    ax_label.fill_between(t, label, alpha=0.5, color='tomato', label='Anomaly')
+    ax_label.plot(t, label, linewidth=0.5, color='tomato', alpha=0.7)
+    ax_label.set_ylabel('Label', fontsize=10)
+    ax_label.set_ylim(-0.1, 1.3)
+    if ts_values is None:
+        ax_label.set_title(f'{os.path.basename(fname)}  |  length={len(label)}  anomaly_ratio={label.mean():.3f}', fontsize=11)
+    ax_label.legend(loc='upper right', fontsize=8)
+    ax_label.tick_params(labelbottom=False)
+    ax_label.set_yticks([0, 1])
+
+    score_label = f'Score  [{detector}]' if detector else 'Anomaly score'
+    ax_score.plot(t, score, linewidth=0.7, color='steelblue', label=score_label)
+    ax_score.set_ylabel('Score', fontsize=10)
+    ax_score.legend(loc='upper right', fontsize=8)
+    ax_score.set_xlabel('Time step', fontsize=10)
+
+    x = np.arange(L + 1)
+    ax_vus.plot(x, curve, linewidth=2, color='steelblue', zorder=3)
+    ax_vus.axvline(x=0, color='gray', linestyle='--', linewidth=1, alpha=0.6)
+
+    auc_pr_val = curve[0]
+    vus_max_val = curve[L]
+    ax_vus.scatter([0], [auc_pr_val], color='tomato', zorder=5, s=70,
+                   label=f'slope=0  (AUC-PR w/ existence) = {auc_pr_val:.4f}')
+    ax_vus.scatter([L], [vus_max_val], color='seagreen', zorder=5, s=70,
+                   label=f'slope={L}  (VUS-PR) = {vus_max_val:.4f}')
+
+    ax_vus.set_xlabel('Slope size (buffer length)', fontsize=12)
+    ax_vus.set_ylabel('VUS-PR', fontsize=12)
+    ax_vus.set_title(f'VUS-PR vs Slope Size  |  Backend: {backend}', fontsize=13)
+    ax_vus.set_xlim(0, L)
+    ax_vus.legend(fontsize=10, loc='lower right')
+    ax_vus.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches='tight')
+        print(f'Figure saved to: {output}')
+    else:
+        plt.show()
+
+
+def _plot_multiple_progressive(filenames, labels, curves, L, dataset, backend, output):
+    fig, ax = plt.subplots(figsize=(13, 6))
+
+    x = np.arange(L + 1)
+    cmap = plt.cm.tab10
+    for i, (fname, label, curve) in enumerate(zip(filenames, labels, curves)):
+        short_name = os.path.basename(fname)
+        ratio = label.mean()
+        ax.plot(x, curve, alpha=0.65, linewidth=1.3, color=cmap(i % 10),
+                label=f'{short_name} (ratio={ratio:.3f})')
+
+    mean_curve = np.mean(curves, axis=0)
+    ax.plot(x, mean_curve, color='black', linewidth=2.5, label=f'Mean (n={len(curves)})', zorder=5)
+
+    auc_pr_mean = mean_curve[0]
+    vus_mean = mean_curve[L]
+    ax.axvline(x=0, color='gray', linestyle='--', linewidth=0.9, alpha=0.55)
+    ax.scatter([0], [auc_pr_mean], color='tomato', zorder=6, s=60)
+    ax.scatter([L], [vus_mean], color='seagreen', zorder=6, s=60)
+
+    offset_y = (mean_curve.max() - mean_curve.min()) * 0.05
+    ax.annotate(
+        f'AUC-PR (slope=0)\nmean = {auc_pr_mean:.4f}',
+        xy=(0, auc_pr_mean),
+        xytext=(L * 0.05, auc_pr_mean + offset_y),
+        fontsize=9, color='dimgray',
+        arrowprops=dict(arrowstyle='->', color='dimgray', lw=1),
+    )
+    ax.annotate(
+        f'VUS-PR (slope={L})\nmean = {vus_mean:.4f}',
+        xy=(L, vus_mean),
+        xytext=(L * 0.80, vus_mean + offset_y),
+        fontsize=9, color='dimgray',
+        arrowprops=dict(arrowstyle='->', color='dimgray', lw=1),
+    )
+
+    ax.set_xlabel('Slope size (buffer length)', fontsize=13)
+    ax.set_ylabel('VUS-PR', fontsize=13)
+    ax.set_title(f'VUS-PR vs Slope Size  |  Dataset: {dataset}  |  Backend: {backend}', fontsize=14)
+    ax.set_xlim(0, L)
+    ax.legend(fontsize=8, loc='lower right', ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches='tight')
+        print(f'Figure saved to: {output}')
+    else:
+        plt.show()
+
+
+def progressive_vus_visualization(
+    dataset='YAHOO',
+    n=5,
+    slope_size=512,
+    backend='numpy',
+    ts_index=None,
+    pick_random=False,
+    seed=None,
+    output=None,
+):
+    """Plot VUS-PR as a curve from slope=0 to slope=L on TSB-AD data."""
+    print(f'Loading {n} time series from {dataset}...')
+    tsb = TSBADParser()
+    filenames, timeseries_list, labels = tsb.load_timeseries(dataset=[dataset])
+    filenames = filenames[:n]; timeseries_list = timeseries_list[:n]; labels = labels[:n]
+    raw_scores, _ = tsb.load_scores_and_delete(filenames, timeseries_list, labels)
+    scores = [s[0] for s in raw_scores]
+    detector_name = tsb.get_detectors()[0]
+    print(f'  Loaded {len(filenames)} time series.')
+
+    single_idx = None
+    if ts_index is not None:
+        if ts_index >= len(filenames):
+            raise ValueError(f'ts_index {ts_index} out of range (loaded {len(filenames)} series)')
+        single_idx = ts_index
+    elif pick_random:
+        if seed is not None:
+            random.seed(seed)
+        single_idx = random.randrange(len(filenames))
+        print(f'  Randomly selected index {single_idx}: {filenames[single_idx]}')
+
+    if single_idx is not None:
+        filenames = [filenames[single_idx]]
+        timeseries_list = [timeseries_list[single_idx]]
+        labels = [labels[single_idx]]
+        scores = [scores[single_idx]]
+
+    curves = []
+    for i, (fname, label, score) in enumerate(zip(filenames, labels, scores)):
+        print(f'  [{i+1}/{len(filenames)}] {fname}  '
+              f'len={len(label)}  anomaly_ratio={label.mean():.3f}')
+        curve = _compute_progressive(label, score, slope_size, backend)
+        curves.append(curve)
+
+    if len(curves) == 1:
+        _plot_single_progressive(
+            filenames[0], labels[0], scores[0], curves[0],
+            slope_size, backend, output,
+            ts_values=timeseries_list[0], detector=detector_name,
+        )
+    else:
+        _plot_multiple_progressive(
+            filenames, labels, curves,
+            slope_size, dataset, backend, output,
+        )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog='main',
         description='Visualize different useful concepts of the ffvus metric'
     )
-    
+
     parser.add_argument(
-        '--plot', 
-        type=str, 
-        choices=['existence_seq', 'conf_matrix', 'gpu_buffers', 'gpu_existence', 'steps', 'global_mask'], 
-        default='existence_seq', 
+        '--plot',
+        type=str,
+        choices=['existence_seq', 'conf_matrix', 'gpu_buffers', 'gpu_existence', 'steps', 'global_mask', 'progressive_vus'],
+        default='existence_seq',
         help='Type of plot to generate'
     )
     args = parser.parse_args()
