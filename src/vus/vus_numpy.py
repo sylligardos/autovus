@@ -1904,19 +1904,23 @@ class VUSNumpy():
         A = self.decumulate(vus_curve)
         g = np.clip(self.decumulate(denom_curve), 1e-10, None)
 
-        # Skill score (VUS - g) / (1 - g): random -> 0, perfect -> 1, bounded to
-        # [0, 1] (sub-random clipped to 0). Comparable across b* because both anchors
-        # are removed at each buffer. ratio_* (VUS / g) is the unbounded diagnostic.
+        # Adjusted VUS (aVUS): chance-adjusted skill score, identical in form to the
+        # Adjusted Rand Index / Adjusted Mutual Information:
+        #     (index - E[random]) / (max - E[random]),  index=VUS, max=1, E[random]=g.
+        # random -> 0, perfect -> 1, comparable across b* (both anchors removed at
+        # each buffer). Stored UNCLIPPED (<= 1, may be slightly negative when
+        # worse-than-chance, exactly like ARI/AMI); clip at 0 only for display.
+        # ratio_* (VUS / g) is the unbounded diagnostic.
         vus_last, denom_last = float(vus_curve[-1]), float(denom_curve[-1])
         skill_A = (vus_last - denom_last) / max(1.0 - denom_last, 1e-10)
-        skill_B = np.mean(np.clip((A - g) / np.clip(1.0 - g, 1e-10, None), 0.0, 1.0))
+        skill_B = float(np.mean((A - g) / np.clip(1.0 - g, 1e-10, None)))
         return {
             'vus':         vus_last,
             'denom':       denom_last,
             'ratio_A':     float(vus_last / max(denom_last, 1e-10)),
             'ratio_B':     float(np.mean(A / g)),
-            'skill_A':     float(np.clip(skill_A, 0.0, 1.0)),
-            'skill_B':     float(skill_B),
+            'skill_A':     float(skill_A),
+            'skill_B':     skill_B,
             'vus_curve':   vus_curve,
             'denom_curve': denom_curve,
         }
@@ -1935,14 +1939,15 @@ class VUSNumpy():
             vus_adapt      raw adaptive VUS (today's number)
             ratio_adapt_A  VUS_adapt / E[VUS_random_adapt]      (ratio of means, unbounded)
             ratio_adapt_B  mean_b( A_adapt[b] / g_adapt[b] )    (mean of ratios, unbounded)
-            skill_adapt_A  (VUS_adapt - g)/(1 - g)              (skill score, [0,1])
-            skill_adapt_B  mean_b clip((A-g)/(1-g))             (per-buffer skill, [0,1])
+            skill_adapt_A  (VUS_adapt - g)/(1 - g)              Adjusted VUS (aVUS), ARI/AMI-style
+            skill_adapt_B  mean_b (A-g)/(1-g)                   per-buffer adjusted, then averaged
             vus_full, ratio_full_A/B, skill_full_A/B            non-adaptive (uniform L) counterparts
             denom_adapt, denom_full
             _adapt, _full  full per-buffer curves (for plotting / debugging)
 
         ratio_* is the unbounded skill-over-random diagnostic; skill_* is the
-        bounded [0,1] headline metric (random -> 0, perfect -> 1).
+        chance-adjusted Adjusted VUS (random -> 0, perfect -> 1), stored UNCLIPPED
+        (<= 1, may be slightly negative); clip at 0 for display.
         """
         if not self.cumulative:
             raise ValueError("score_adapt requires cumulative=True")
