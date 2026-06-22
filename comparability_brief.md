@@ -131,102 +131,102 @@ configuration, which should make this clean.)*
 **Proof (A).**
 Write the fixed per-anomaly cap vector as $c=(c_1,\ldots,c_K)$; in the notation of the metric, this is the fixed vector `b*`. For each VUS sweep level $\ell\in\{0,\ldots,L\}$, let
 
-$$
+```math
 \tilde y_{\ell,c}(t)\in[0,1]
-$$
+```
 
 denote the adapted soft label. Original anomalous points have value $1$, buffer points have values in $(0,1)$, and background points have value $0$.
 
 For a threshold $\tau$, define
 
-$$
+```math
 R_\tau=\{t:s(t)\ge \tau\}.
-$$
+```
 
 The threshold-level weighted true-positive and false-positive masses are
 
-$$
+```math
 TP_{\ell,c}(\tau)=\sum_{t\in R_\tau}\tilde y_{\ell,c}(t),
-$$
+```
 
-$$
+```math
 FP_{\ell,c}(\tau)=\sum_{t\in R_\tau}\bigl(1-\tilde y_{\ell,c}(t)\bigr).
-$$
+```
 
 Since $0\le \tilde y_{\ell,c}(t)\le 1$,
 
-$$
+```math
 FP_{\ell,c}(\tau)\ge 0.
-$$
+```
 
 Hence
 
-$$
+```math
 \mathrm{Prec}_{\ell,c}(\tau)
 =
 \frac{TP_{\ell,c}(\tau)}{TP_{\ell,c}(\tau)+FP_{\ell,c}(\tau)}
 \le 1,
-$$
+```
 
 and similarly $\mathrm{Rec}_{\ell,c}(\tau)\le 1$. Therefore every threshold-level point on the PR curve lies in the unit square, and
 
-$$
+```math
 A_{\ell,c}(s)\le 1,
-$$
+```
 
 where $A_{\ell,c}(s)$ is the AUC-PR at sweep level $\ell$. Thus
 
-$$
+```math
 V_c(s)=\frac{1}{L+1}\sum_{\ell=0}^{L}A_{\ell,c}(s)\le 1.
-$$
+```
 
 Let
 
-$$
+```math
 g_{\ell,c}=\frac{1}{T}\sum_{t=1}^{T}\tilde y_{\ell,c}(t),
 \qquad
 D_c=\frac{1}{L+1}\sum_{\ell=0}^{L}g_{\ell,c}.
-$$
+```
 
 Then
 
-$$
+```math
 \mathrm{skill}_A(c,s)=\frac{V_c(s)-D_c}{1-D_c}\le 1.
-$$
+```
 
 Also, since $A_{\ell,c}(s)\le 1$ for every $\ell$,
 
-$$
+```math
 \frac{A_{\ell,c}(s)-g_{\ell,c}}{1-g_{\ell,c}}\le 1,
-$$
+```
 
 and hence
 
-$$
+```math
 \mathrm{skill}_B(c,s)
 =
 \frac{1}{L+1}\sum_{\ell=0}^{L}
 \frac{A_{\ell,c}(s)-g_{\ell,c}}{1-g_{\ell,c}}
 \le 1.
-$$
+```
 
 We next show that the upper endpoint is achieved only by a perfect detector. A perfect detector means that its score is order-equivalent to the original binary label: all original anomalous points are ranked above all non-anomalous points; equivalently, after thresholding, the detector can exactly recover the original anomaly label.
 
 For such a detector, in the Step-1 local window of anomaly $k$, the zero-buffer label is already perfectly matched, so
 
-$$
+```math
 A_k(0)=1.
-$$
+```
 
 For any $b>0$ that adds nonempty buffer area, the baseline strictly increases,
 
-$$
+```math
 g_k(b)>g_k(0),
-$$
+```
 
 while $A_k(b)\le 1$. Therefore the Step-1 marginal skill ratio satisfies
 
-$$
+```math
 r_k(b)=\frac{A_k(b)}{g_k(b)}
 \le
 \frac{1}{g_k(b)}
@@ -236,63 +236,63 @@ r_k(b)=\frac{A_k(b)}{g_k(b)}
 \frac{A_k(0)}{g_k(0)}
 =
 r_k(0).
-$$
+```
 
 Thus the maximizer is $b_k^*=0$ for every anomaly $k$; if a positive buffer width adds no new time points, it is equivalent to zero and the smallest maximizer is selected. Hence a perfect detector yields
 
-$$
+```math
 b^*=(0,\ldots,0).
-$$
+```
 
 The final adapted label is then the original binary label, with no fractional buffer region. Therefore
 
-$$
+```math
 A_{\ell,b^*}(s)=1\quad\forall \ell,
-$$
+```
 
 so
 
-$$
+```math
 V_{b^*}(s)=1,
 \qquad
 \mathrm{skill}_A(b^*,s)=1,
 \qquad
 \mathrm{skill}_B(b^*,s)=1.
-$$
+```
 
 Conversely, suppose some selected cap is nonzero and produces a nonempty buffer region. Then for some sweep level $\ell$ there exists a buffer point $t$ with
 
-$$
+```math
 0<\tilde y_{\ell,b^*}(t)<1.
-$$
+```
 
 If this point is selected at any threshold, it contributes positive false-positive mass
 
-$$
+```math
 1-\tilde y_{\ell,b^*}(t)>0.
-$$
+```
 
 Therefore precision cannot remain equal to $1$ over all recall-increasing thresholds, and hence
 
-$$
+```math
 A_{\ell,b^*}(s)<1
-$$
+```
 
 for at least one sweep level $\ell$. Consequently,
 
-$$
+```math
 V_{b^*}(s)<1,
 \qquad
 \mathrm{skill}_A(b^*,s)<1,
 \qquad
 \mathrm{skill}_B(b^*,s)<1.
-$$
+```
 
 If no nonzero buffer is selected, then reaching $A_{0,b^*}(s)=1$ still requires all original anomalous points to be ranked above all background points. Thus equality at the upper endpoint occurs if and only if the detector is perfect.
 
 It remains to verify the chance endpoint. Fix $c$ and suppose $s$ is random and independent of the label. Conditional on $|R_\tau|=m$, $R_\tau$ is a uniformly random subset of size $m$. Hence
 
-$$
+```math
 \mathbb{E}\left[
 \mathrm{Prec}_{\ell,c}(\tau)
 \mid |R_\tau|=m
@@ -305,19 +305,19 @@ $$
 \frac{1}{T}\sum_{t=1}^{T}\tilde y_{\ell,c}(t)
 =
 g_{\ell,c}.
-$$
+```
 
 Thus the analytical random baseline at sweep level $\ell$ is
 
-$$
+```math
 \mathbb{E}\left[A_{\ell,c}(s)\mid s\ \mathrm{random}\right]
 =
 g_{\ell,c}.
-$$
+```
 
 Averaging over sweep levels gives
 
-$$
+```math
 \mathbb{E}\left[V_c(s)\mid s\ \mathrm{random}\right]
 =
 \frac{1}{L+1}\sum_{\ell=0}^{L}
@@ -326,11 +326,11 @@ $$
 \frac{1}{L+1}\sum_{\ell=0}^{L}g_{\ell,c}
 =
 D_c.
-$$
+```
 
 Since $c$ is fixed, $D_c$ is deterministic with respect to the detector randomness. Therefore
 
-$$
+```math
 \mathbb{E}\left[\mathrm{skill}_A(c,s)\mid s\ \mathrm{random}\right]
 =
 \frac{
@@ -338,11 +338,11 @@ $$
 }{1-D_c}
 =
 0.
-$$
+```
 
 For `skill_B`, linearity of expectation gives
 
-$$
+```math
 \mathbb{E}\left[\mathrm{skill}_B(c,s)\mid s\ \mathrm{random}\right]
 =
 \frac{1}{L+1}\sum_{\ell=0}^{L}
@@ -351,7 +351,7 @@ $$
 }{1-g_{\ell,c}}
 =
 0.
-$$
+```
 
 Therefore, for any fixed cap configuration, both `skill_A` and `skill_B` map a random detector to $0$ in expectation and map a perfect detector uniquely to $1$.
 
@@ -365,53 +365,53 @@ well-defined across detectors — and across different time series.
 **Proof (B).**
 Let two detectors $s_a$ and $s_b$ be evaluated under possibly different per-anomaly cap vectors $b_a^*$ and $b_b^*$. Their raw adapted VUS values are
 
-$$
+```math
 V_{b_a^*}(s_a),
 \qquad
 V_{b_b^*}(s_b).
-$$
+```
 
 These raw values are not directly comparable in general, because the two cap vectors may induce different adapted labels and therefore different chance baselines,
 
-$$
+```math
 D_{b_a^*}\ne D_{b_b^*}.
-$$
+```
 
 The adjusted scores are
 
-$$
+```math
 \mathrm{skill}_A(b_a^*,s_a)
 =
 \frac{V_{b_a^*}(s_a)-D_{b_a^*}}{1-D_{b_a^*}},
-$$
+```
 
-$$
+```math
 \mathrm{skill}_A(b_b^*,s_b)
 =
 \frac{V_{b_b^*}(s_b)-D_{b_b^*}}{1-D_{b_b^*}}.
-$$
+```
 
 By Proposition A, for every fixed cap vector $b^*$,
 
-$$
+```math
 \mathbb{E}\left[\mathrm{skill}_A(b^*,s)\mid s\ \mathrm{random}\right]=0,
 \qquad
 \mathrm{skill}_A(b^*,s)=1
 \iff
 s\ \mathrm{is\ perfect}.
-$$
+```
 
 Thus each configuration-specific raw VUS is mapped to the same normalized endpoints,
 
-$$
+```math
 0=\mathrm{chance},
 \qquad
 1=\mathrm{perfect}.
-$$
+```
 
 Equivalently,
 
-$$
+```math
 \mathrm{skill}_A(b^*,s)
 =
 \frac{
@@ -419,37 +419,37 @@ $$
 }{
 \mathrm{perfect\ performance}-\mathrm{chance\ performance}
 }.
-$$
+```
 
 Therefore `skill_A` is a dimensionless fraction of the attainable improvement from chance to perfect. This interpretation is invariant to the particular cap vector $b^*$, so scores computed under different per-anomaly buffer configurations lie on a common calibrated scale.
 
 The same argument applies to `skill_B`. For two cap vectors $b_a^*$ and $b_b^*$,
 
-$$
+```math
 \mathrm{skill}_B(b_a^*,s_a)
 =
 \frac{1}{L+1}\sum_{\ell=0}^{L}
 \frac{A_{\ell,b_a^*}(s_a)-g_{\ell,b_a^*}}{1-g_{\ell,b_a^*}},
-$$
+```
 
 and
 
-$$
+```math
 \mathrm{skill}_B(b_b^*,s_b)
 =
 \frac{1}{L+1}\sum_{\ell=0}^{L}
 \frac{A_{\ell,b_b^*}(s_b)-g_{\ell,b_b^*}}{1-g_{\ell,b_b^*}}.
-$$
+```
 
 By Proposition A,
 
-$$
+```math
 \mathbb{E}\left[\mathrm{skill}_B(b^*,s)\mid s\ \mathrm{random}\right]=0,
 \qquad
 \mathrm{skill}_B(b^*,s)=1
 \iff
 s\ \mathrm{is\ perfect},
-$$
+```
 
 for every fixed cap vector $b^*$. Hence `skill_B` is also on the same chance-to-perfect scale.
 
@@ -469,22 +469,22 @@ buffer grid) the **ranking** between detectors is still preserved.
 **Discussion (C).**
 Propositions A and B establish calibration conditional on a fixed per-anomaly buffer configuration. In the full adaptive pipeline, however, the cap vector is not fixed. It is selected from the detector scores:
 
-$$
+```math
 b^*(s)=B(y,s).
-$$
+```
 
 This introduces a standard selection effect. Even for a random detector, the marginal skill curve fluctuates around its chance level at each candidate buffer.
 Selecting
 
-$$
+```math
 b_k^*=\arg\max_b r_k(b)
-$$
+```
 
 therefore selects the largest upward fluctuation. Hence the post-selection random baseline is generally not exactly zero:
 
-$$
+```math
 \mathbb{E}[\mathrm{skill}_A(b^*(s),s)\mid s\ \mathrm{random}] \ge 0,
-$$
+```
 
 and in finite samples it can be strictly positive.
 
@@ -496,17 +496,17 @@ For this reason, we do not rely on Proposition C as a claim of unconditional ran
 
 In the controlled experiments, we additionally constrain the adaptive buffer search range by the duration of each anomaly. Let \(L_{\mathrm{global}}\) denote the global maximum buffer size. For anomaly \(k\), we restrict the candidate buffer set to
 
-$$
+```math
 b_k^* \in \{0,\ldots,L_k\},
 \qquad
 L_k=\min(L_{\mathrm{global}}, |A_k|).
-$$
+```
 
 In our synthetic example, the ground-truth anomaly has length \(|A_k|=20\), and we set \(L_{\mathrm{global}}=20\). Therefore the adaptive selection is only allowed to choose
 
-$$
+```math
 b_k^* \in \{0,\ldots,20\}.
-$$
+```
 
 This setting prevents the selected tolerance window from exceeding the temporal scale of the anomaly itself. In particular, it avoids allowing a short anomaly to explain very distant false-positive regions through an excessively large buffer.
 
