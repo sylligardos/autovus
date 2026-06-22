@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import plotly.colors as pc
 from PIL import Image
 from plotly.subplots import make_subplots as _plotly_subplots
+from scipy.stats import kendalltau
 
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.join(_SRC_DIR, '..')
@@ -121,7 +122,10 @@ def load_score_display(fname: str, detector: str, max_points: int = _DISPLAY_MAX
 def compute_avg_label_cached(fname: str, slope_size: int):
     """Buffered label, independent of detector — one call per (fname, slope_size)."""
     _, label = load_timeseries(fname)
-    vus = VUSNumpy(slope_size=slope_size, step=1)
+    # slopes='precomputed' is required: this function uses add_slopes_precomputed,
+    # which reads self.pos_slopes (only built in precomputed mode). The class default
+    # changed to 'function', so it must be requested explicitly here.
+    vus = VUSNumpy(slope_size=slope_size, step=1, slopes='precomputed')
     # get_anomalies_coordinates is wrapped with @time_it → (result, elapsed)
     ((start_no_edges, end_no_edges), _), _ = vus.get_anomalies_coordinates(label)
     # `add_slopes_precomputed` (default mode) ignores `pos`, so we skip the
@@ -211,6 +215,25 @@ def load_precomputed_adaptive():
         'synth_names':   d['synth_names'].tolist(),
         'L':             int(d['L']),
     }
+
+
+@st.cache_data
+def load_ranking_adapt():
+    """Adjusted-VUS ranking results (Stage-1 CSV from compute_ranking_adapt.py).
+
+    Long-format: one row per (series, detector) at L=256 over the 772 complete-case
+    series. Adds a display-clipped Adjusted VUS column `avus` (= skill_adapt_A, the
+    chance-adjusted headline metric, clipped to [0, 1]).
+    """
+    path = os.path.join(_ROOT_DIR, 'experiments', 'ranking_adapt', 'scores_all.csv')
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path)
+    if 'note' in df.columns:
+        df = df[df['note'].isna()]
+    df = df.dropna(subset=['skill_adapt_A', 'vus_full'])
+    df['avus'] = df['skill_adapt_A'].clip(lower=0.0)
+    return df
 
 
 @st.cache_data
@@ -997,6 +1020,33 @@ def make_convergence_figure(det_names, b_stars, mean_anom_len):
         height=420,
         hovermode='x unified',
         xaxis_tickangle=45,
+    )
+    return fig
+
+
+def make_adapt_ranking_figure(sub):
+    """Grouped horizontal bars: VUS vs Adjusted VUS per detector, sorted by aVUS.
+
+    The 'VUS squashes detectors near 1.0 while aVUS separates them' view, per series.
+    """
+    sub = sub.sort_values('avus', ascending=True)  # ascending -> best on top in barh
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=sub['detector'], x=sub['vus_full'], orientation='h',
+        name='VUS', marker_color='steelblue',
+        hovertemplate='%{y}<br>VUS = %{x:.4f}<extra></extra>',
+    ))
+    fig.add_trace(go.Bar(
+        y=sub['detector'], x=sub['avus'], orientation='h',
+        name='Adjusted VUS', marker_color='crimson',
+        hovertemplate='%{y}<br>aVUS = %{x:.4f}<extra></extra>',
+    ))
+    fig.update_layout(
+        title='VUS vs Adjusted VUS per detector  (this series)',
+        barmode='group', xaxis_title='score', xaxis_range=[0, 1],
+        height=max(420, 22 * len(sub)),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02),
+        margin=dict(l=10, r=10, t=60, b=40),
     )
     return fig
 
@@ -2251,115 +2301,247 @@ def notes_page() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Adaptive buffer page
+# Adaptive buffer page  (Adjusted VUS ranking)
 # ---------------------------------------------------------------------------
 
-_AB_METHOD_MAP = {'argmax': 0, 'elbow': 1, 'first_peak': 2}
+# Final measures from score_adapt (CSV column -> display name). Skill (Adjusted
+# VUS) columns are clipped at 0 for display; ratio columns are unbounded.
+_ADAPT_MEASURES = {
+    'vus_full':      'VUS',
+    'vus_adapt':     'VUS_adapt (raw)',
+    'skill_adapt_A': 'aVUS-A (adaptive)',
+    'skill_adapt_B': 'aVUS-B (adaptive)',
+    'skill_full_A':  'aVUS-A (full)',
+    'skill_full_B':  'aVUS-B (full)',
+    'ratio_adapt_A': 'ratio-A (adaptive)',
+    'ratio_adapt_B': 'ratio-B (adaptive)',
+    'ratio_full_A':  'ratio-A (full)',
+    'ratio_full_B':  'ratio-B (full)',
+}
+_ADAPT_SKILL_COLS = {'skill_adapt_A', 'skill_adapt_B', 'skill_full_A', 'skill_full_B'}
+_ADAPT_DEFAULT_MEASURES = ['vus_full', 'skill_adapt_A']
+
+
+def _clip_measure(df, col):
+    v = df[col].astype(float)
+    return v.clip(lower=0.0) if col in _ADAPT_SKILL_COLS else v
+
+
+def make_adapt_barplot(df, cols):
+    """Per-detector bar chart: bar = mean of a measure across the series in scope,
+    so detector RANKING is visible. Grouped by measure when several are selected,
+    to compare how the ranking changes from one metric to another.
+
+    Detectors are ordered by the mean of the first selected measure (best on top).
+    """
+    palette = pc.qualitative.Plotly
+    agg = {col: pd.DataFrame({'detector': df['detector'], 'v': _clip_measure(df, col)})
+                  .groupby('detector')['v'].mean()
+           for col in cols}
+    # ascending so the highest-scoring detector sits at the top of the horizontal axis
+    order = agg[cols[0]].sort_values().index.tolist()
+
+    fig = go.Figure()
+    for i, col in enumerate(cols):
+        a = agg[col].reindex(order)
+        fig.add_trace(go.Bar(
+            x=a.values, y=a.index, orientation='h',
+            name=_ADAPT_MEASURES.get(col, col),
+            marker_color=palette[i % len(palette)],
+            hovertemplate='%{y}<br>' + _ADAPT_MEASURES.get(col, col) + ' = %{x:.4f}<extra></extra>',
+        ))
+    fig.update_layout(
+        title='Detector ranking by mean score  (across scope)',
+        xaxis_title='mean score', barmode='group',
+        yaxis=dict(categoryorder='array', categoryarray=order, title='detector'),
+        height=max(500, 22 * len(order)),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02),
+        margin=dict(l=10, r=10, t=60, b=40),
+    )
+    return fig
+
+
+@st.cache_data
+def compute_ranking_change_table():
+    """Per-series ranking change between VUS and Adjusted VUS (aVUS-A).
+
+    For each series: Kendall-tau between the per-detector VUS and aVUS values
+    (low tau = ranking changes a lot), whether the best detector flips, and the
+    spread gain (aVUS spread - VUS spread). Cached; used to surface interesting cases.
+    """
+    rk = load_ranking_adapt()
+    if rk is None:
+        return None
+    rows = []
+    for (ds, fn), g in rk.groupby(['dataset', 'filename']):
+        v = g['vus_full'].to_numpy(dtype=float)
+        a = g['avus'].to_numpy(dtype=float)
+        m = np.isfinite(v) & np.isfinite(a)
+        if m.sum() < 2:
+            continue
+        tau = kendalltau(v[m], a[m]).correlation
+        det = g['detector'].to_numpy()
+        rows.append({
+            'dataset': ds, 'filename': fn,
+            'kendall_tau': float(tau) if tau is not None and np.isfinite(tau) else np.nan,
+            'top1_flip': bool(det[np.nanargmax(np.where(m, v, -np.inf))]
+                              != det[np.nanargmax(np.where(m, a, -np.inf))]),
+            'best_vus':  det[np.nanargmax(np.where(m, v, -np.inf))],
+            'best_avus': det[np.nanargmax(np.where(m, a, -np.inf))],
+            'vus_spread':  float(np.nanmax(v[m]) - np.nanmin(v[m])),
+            'avus_spread': float(np.nanmax(a[m]) - np.nanmin(a[m])),
+        })
+    d = pd.DataFrame(rows)
+    if len(d):
+        d['sep_gain'] = d['avus_spread'] - d['vus_spread']
+    return d
 
 
 @st.fragment
-def adaptive_buffer_page(fname: str):
+def adaptive_buffer_page(dataset: str, fname: str):
     st.header('Adaptive Buffer')
     st.caption(
-        'For each detector and the selected time series, shows the label expansion at b* — '
-        'the adaptively selected buffer that maximises VUS-PR relative to the random baseline. '
-        '**Red** = ground-truth anomaly · **Blue** = buffer expansion zone at b*. '
-        'Precomputed from `experiments/precomputed/rankings_L1024.npz`.'
+        'Adjusted VUS (aVUS = chance-adjusted skill score) vs VUS, from '
+        '`experiments/ranking_adapt/scores_all.csv` (L=256, 772 complete-case series). '
+        'Where VUS squashes detectors near 1.0, aVUS separates them and the ranking changes.'
     )
 
-    data = load_precomputed_adaptive()
-    if data is None:
-        st.error(
-            'Precomputed adaptive buffer data not found at '
-            '`experiments/precomputed/rankings_L1024.npz`.\n\n'
-            'Generate it with:\n```\n'
-            'conda run -n ffvus python src/precompute_demo.py --L 1024\n```'
+    rk = load_ranking_adapt()
+    if rk is None:
+        st.info(
+            'Ranking results not found. Generate with:\n```\n'
+            'conda run -n ffvus python src/compute_ranking_adapt.py --dataset all --no-community\n```'
         )
         return
 
-    files       = data['files']
-    detectors   = data['detectors']
-    synth_names = data['synth_names']
+    # --- Scope (mirrors Ranking Instability) ---
+    scope = st.radio('Scope', ['Global', 'Dataset', 'Time series'],
+                     index=2, horizontal=True, key='ab_scope')
+    if scope == 'Global':
+        scoped = rk
+    elif scope == 'Dataset':
+        scoped = rk[rk['dataset'] == dataset]
+    else:
+        scoped = rk[rk['filename'] == fname]
 
-    if fname not in files:
+    scope_label = scope
+    if scope in ('Dataset', 'Time series'):
+        scope_label += f'  /  {dataset}'
+    if scope == 'Time series':
+        scope_label += f'  /  {os.path.basename(fname)}'
+
+    if scoped.empty:
         st.warning(
-            f'**{os.path.basename(fname)}** not found in precomputed adaptive buffer data. '
-            'Re-run `precompute_demo.py --L 1024 --force`.'
+            f'No ranking data in scope ({scope_label}). The selected series may have '
+            'been dropped (a detector lacked scores) or the run is partial.'
         )
         return
 
-    file_idx      = files.index(fname)
-    mean_anom_len = float(data['mean_anom_len'][file_idx])
-    n_anom        = int(data['n_anomalies'][file_idx])
-
-    if n_anom == 0:
-        st.info('This time series has no labeled anomalies.')
-        return
-
-    # Controls
-    c_method, c_det = st.columns([1, 3])
-    with c_method:
-        method = st.radio('b* method', list(_AB_METHOD_MAP.keys()),
-                          horizontal=False, key='ab_method')
-    method_idx = _AB_METHOD_MAP[method]
-
-    all_labels = [d for d in detectors] + [f'[synth] {s}' for s in synth_names]
-    with c_det:
-        selected_labels = st.multiselect(
-            'Detectors  (real + synthetic)',
-            all_labels,
-            default=all_labels[:min(5, len(all_labels))],
-            key='ab_dets',
-        )
-
-    if not selected_labels:
-        st.info('Select at least one detector to display.')
-        return
-
-    # Load raw time series (display-resolution)
-    ts_x, ts_y, label = load_timeseries_display(fname)
-
-    # Build per-detector (name, expanded_label, b_star_val)
-    det_names, expanded_labels, b_star_vals = [], [], []
-    for lbl in selected_labels:
-        if lbl.startswith('[synth] '):
-            sname = lbl[len('[synth] '):]
-            if sname not in synth_names:
-                continue
-            k     = synth_names.index(sname)
-            b_val = int(data['synth_b_star'][file_idx, k, method_idx])
-        else:
-            if lbl not in detectors:
-                continue
-            j     = detectors.index(lbl)
-            b_val = int(data['b_star'][file_idx, j, method_idx])
-
-        b_val = max(b_val, 0)
-        det_names.append(lbl)
-        expanded_labels.append(_expand_label(label, b_val))
-        b_star_vals.append(b_val)
-
-    if not det_names:
-        st.warning('No data available for the selected detectors on this time series.')
-        return
-
-    c1, c2 = st.columns(2)
-    c1.metric('Mean anomaly length', f'{mean_anom_len:.1f}')
-    c2.metric('N anomalies', str(n_anom))
-
-    fig = make_adaptive_buffer_figure(
-        fname, ts_x, ts_y, label, det_names, expanded_labels, b_star_vals,
+    st.caption(
+        f'Aggregating **{scoped["filename"].nunique()}** series · '
+        f'**{len(scoped)}** (series, detector) rows · {scope_label}'
     )
-    st.plotly_chart(fig, width='stretch')
+
+    # --- Measure selection + boxplot ---
+    avail = [c for c in _ADAPT_MEASURES if c in scoped.columns and scoped[c].notna().any()]
+    chosen = st.multiselect(
+        'Measures', avail,
+        default=[c for c in _ADAPT_DEFAULT_MEASURES if c in avail],
+        format_func=lambda c: _ADAPT_MEASURES.get(c, c),
+        key='ab_measures',
+    )
+    if chosen:
+        st.plotly_chart(make_adapt_barplot(scoped, chosen), width='stretch')
+    else:
+        st.info('Select at least one measure to plot.')
+
+    # Single series in scope: also show its per-detector ranking.
+    if scope == 'Time series':
+        sub = scoped.copy()
+        sub['rank_vus'] = sub['vus_full'].rank(ascending=False, method='min').astype(int)
+        sub['rank_avus'] = sub['avus'].rank(ascending=False, method='min').astype(int)
+        best_v = sub.loc[sub['vus_full'].idxmax(), 'detector']
+        best_a = sub.loc[sub['avus'].idxmax(), 'detector']
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric('VUS spread', f"{sub['vus_full'].max() - sub['vus_full'].min():.3f}")
+        m2.metric('aVUS spread', f"{sub['avus'].max() - sub['avus'].min():.3f}")
+        m3.metric('Best · VUS', best_v)
+        m4.metric('Best · aVUS', best_a)
+        if best_v != best_a:
+            st.warning(f'Top-1 reranked — VUS picks **{best_v}**, aVUS picks **{best_a}**.')
+        show = sub[['detector', 'vus_full', 'avus', 'skill_adapt_B', 'ratio_adapt_A',
+                    'b_star_mean', 'rank_vus', 'rank_avus']].rename(columns={
+            'vus_full': 'VUS', 'avus': 'aVUS (A)', 'skill_adapt_B': 'aVUS (B)',
+            'ratio_adapt_A': 'ratio (A)', 'b_star_mean': 'mean b*',
+            'rank_vus': 'rank VUS', 'rank_avus': 'rank aVUS',
+        })
+        st.dataframe(show.sort_values('rank aVUS'), width='stretch', hide_index=True)
 
     st.divider()
-    st.subheader('Convergence')
+
+    # --- Find series where the ranking changes most ---
+    st.subheader('Find series with large ranking change')
     st.caption(
-        '`mean_anom_len + b*` per detector — values should cluster near `mean_anom_len` '
-        '(dashed line) if the adaptive buffer is working correctly.'
+        'Per series: Kendall-τ between the per-detector VUS and Adjusted VUS values '
+        '(low τ = the ranking changes a lot), whether the best detector flips, and the '
+        'spread gain (aVUS spread − VUS spread). Surfaces the interesting cases to check.'
     )
-    conv_fig = make_convergence_figure(det_names, b_star_vals, mean_anom_len)
-    st.plotly_chart(conv_fig, width='stretch')
+
+    change = compute_ranking_change_table()
+    if change is None or change.empty:
+        st.info('No ranking-change data available.')
+        return
+
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        search_scope = st.radio('Search scope', ['Global', 'Dataset'],
+                                horizontal=True, key='ab_change_scope')
+    with f2:
+        sort_by = st.selectbox(
+            'Rank cases by',
+            ['Most reranked (low τ)', 'Largest spread gain', 'Top-1 flips first'],
+            key='ab_change_sort',
+        )
+    with f3:
+        max_rows = st.number_input('Max results', min_value=5, max_value=200,
+                                   value=25, step=5, key='ab_change_nrows')
+
+    csub = change if search_scope == 'Global' else change[change['dataset'] == dataset]
+    if csub.empty:
+        st.info('No series in the selected scope.')
+        return
+
+    if sort_by == 'Most reranked (low τ)':
+        csub = csub.sort_values('kendall_tau', ascending=True)
+    elif sort_by == 'Largest spread gain':
+        csub = csub.sort_values('sep_gain', ascending=False)
+    else:
+        csub = csub.sort_values(['top1_flip', 'kendall_tau'], ascending=[False, True])
+
+    disp = csub.head(int(max_rows)).copy()
+    disp['Time series'] = disp['filename'].map(os.path.basename)
+    table = disp[['dataset', 'Time series', 'kendall_tau', 'top1_flip',
+                  'best_vus', 'best_avus', 'vus_spread', 'avus_spread', 'sep_gain']].rename(columns={
+        'dataset': 'Dataset', 'kendall_tau': 'Kendall-τ', 'top1_flip': 'Top-1 flip',
+        'best_vus': 'Best VUS', 'best_avus': 'Best aVUS',
+        'vus_spread': 'VUS spread', 'avus_spread': 'aVUS spread', 'sep_gain': 'Spread gain',
+    })
+    st.caption(
+        f'{len(csub)} series in scope · {int(disp["top1_flip"].sum())} of the shown '
+        f'{len(disp)} flip their best detector.'
+    )
+    st.dataframe(
+        table.style
+            .format({'Kendall-τ': '{:.3f}', 'VUS spread': '{:.3f}',
+                     'aVUS spread': '{:.3f}', 'Spread gain': '{:.3f}'})
+            .background_gradient(subset=['Kendall-τ'], cmap='RdYlGn')
+            .background_gradient(subset=['Spread gain'], cmap='RdYlGn_r'),
+        width='stretch', hide_index=True,
+    )
+    st.caption(
+        'Tip: set the **Dataset / Time series** selectors in the left panel to a row '
+        'above, then switch Scope to **Time series** to inspect its per-detector ranking.'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2467,7 +2649,7 @@ def main():
         existence_map_page(dataset, fname, slope_size)
 
     with tab6:
-        adaptive_buffer_page(fname)
+        adaptive_buffer_page(dataset, fname)
 
     with tab7:
         notes_page()

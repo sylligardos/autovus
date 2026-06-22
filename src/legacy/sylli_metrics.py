@@ -37,7 +37,7 @@ def time_it(func):
 
 
 @time_it
-def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
+def sylli_get_metrics(label, score, metric, slope_size=None, existence=True, max_thresholds=250):
     """
     Compute the selected evaluation metric given the labels, anomaly scores,
     and slope_size when required.
@@ -55,7 +55,7 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True):
 
     if metric == 'vus' and slope_size is not None:
         compute_legacy = metricor()
-        _, _, _, _, metric_value = compute_legacy.RangeAUC_volume_opt_mem(label, score, slope_size, existence_flag=existence)
+        _, _, _, _, metric_value = compute_legacy.RangeAUC_volume_opt_mem(label, score, slope_size, existence_flag=existence, thre=max_thresholds)
     elif metric == 'rf':
         metric_value = basic_metricor().sylli_RF(label, score)
     elif metric == 'affiliation':

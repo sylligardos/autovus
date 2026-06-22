@@ -27,7 +27,8 @@ from vus.vus_numpy import VUSNumpy
 SLOPE_SIZE = 256
 T = 1000
 vus = VUSNumpy(slope_size=SLOPE_SIZE, cumulative=True)
-_PLOT = False  # set to True via --show at runtime
+_PLOT = False       # set to True via --show at runtime
+_PER_SIDE = False   # default per_side for score tests; set via --per-side at runtime
 
 
 def make_label(anomalies, length=T):
@@ -197,12 +198,15 @@ def test_single_anomaly_matches_global():
     score = offset_score(label, offset=5)
 
     (global_result, _), _ = vus.compute(label, score, adaptive=True)
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT)
+    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     lag = 5
     assert len(per_anom) == 1, f"Expected 1 result, got {len(per_anom)}"
     assert per_anom[0]['window'] == (0, T), f"Single anomaly window should span full series (0, {T}), got {per_anom[0]['window']}"
-    assert np.allclose(per_anom[0]['vus'], global_result['vus']), "VUS curves must match for single anomaly (same window = full series)"
+    if not _PER_SIDE:
+        # 'vus' is the both-sided curve only in symmetric mode; per-side stores
+        # one-sided curves under vus_left/vus_right instead.
+        assert np.allclose(per_anom[0]['vus'], global_result['vus']), "VUS curves must match for single anomaly (same window = full series)"
     b = per_anom[0]['best']['buffer_val']
     tol = lag // 2
     assert abs(b - lag) <= tol, f"lag={lag}  b*={b}  expected b* in [{lag - tol}, {lag + tol}]"
@@ -217,7 +221,7 @@ def test_window_bounds_slicing():
     label = make_label(anomalies)
     score = offset_score(label, offset=0)
 
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT)
+    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     assert per_anom[0]['window'] == (0, 205),   f"Got {per_anom[0]['window']}"
     assert per_anom[1]['window'] == (205, 460), f"Got {per_anom[1]['window']}"
@@ -235,7 +239,7 @@ def test_no_anomalies():
     print("\n=== Test 3: no anomalies returns [] ===")
     label = np.zeros(T)
     score = np.random.default_rng(0).uniform(0, 1, T)
-    result = vus.compute_per_anomaly_adaptive_slicing(label, score)
+    result = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=_PER_SIDE)
     assert result == [], f"Expected [], got {result}"
     print("  PASS")
 
@@ -261,7 +265,7 @@ def test_length_vs_buffer():
     label = make_label(anomalies)
     score = offset_score(label, offset=lag)
 
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT)
+    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     expectations = [
         (lag, f"b*≈{lag} (point anomaly, late detection within L is included — lag={lag})"),
@@ -289,13 +293,17 @@ def test_length_vs_buffer():
 # Score-type tests (6–13) — one per detection pattern, across all label configs
 # ---------------------------------------------------------------------------
 
-def _run_score_test(score_fn, label_configs, check_fn, test_name):
+def _run_score_test(score_fn, label_configs, check_fn, test_name, per_side=None):
+    # per_side=None -> follow the runtime default (_PER_SIDE, set by --per-side).
+    # Tests that guard a symmetric-only property pass per_side=False explicitly.
+    if per_side is None:
+        per_side = _PER_SIDE
     print(f"\n=== {test_name} ===")
     failures = []
     for cfg in label_configs:
         label    = make_label(cfg['anomalies'])
         score    = score_fn(label)
-        per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT)
+        per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=per_side)
         if len(per_anom) != len(cfg['anomalies']):
             msg = f"[{cfg['tag']}] Expected {len(cfg['anomalies'])} result(s), got {len(per_anom)}"
             print(f"  FAIL  {msg}")
@@ -360,19 +368,74 @@ def test_score_E3_partial():
 
 
 def test_score_E4_early_over():
-    """E-4: score extends beyond the left buffer boundary — b* should be small."""
+    """E-4: score extends beyond the left buffer boundary — b* should be small.
+
+    The over-prediction bound is a symmetric-mode property; under --per-side the
+    flooded side may legitimately absorb the over-prediction into its buffer, so
+    we only report the b* values there (no verdict) and assert the bound when
+    symmetric.
+    """
     def check(b, cfg):
-        assert b <= SLOPE_SIZE // 2, \
-            f"[{cfg['tag']}] b*={b}, over-prediction should not inflate b* beyond SLOPE_SIZE/2={SLOPE_SIZE // 2}"
+        if not _PER_SIDE:
+            assert b <= SLOPE_SIZE // 2, \
+                f"[{cfg['tag']}] b*={b}, over-prediction should not inflate b* beyond SLOPE_SIZE/2={SLOPE_SIZE // 2}"
     _run_score_test(score_E4_early_over, LABEL_CONFIGS, check, "Test 12: E-4 Early over-prediction")
 
 
 def test_score_E5_late_over():
-    """E-5: score decays past the right buffer boundary — b* should be small."""
+    """E-5: score decays past the right buffer boundary — b* should be small.
+
+    See test_score_E4_early_over: bound asserted in symmetric mode only.
+    """
     def check(b, cfg):
-        assert b <= SLOPE_SIZE // 2, \
-            f"[{cfg['tag']}] b*={b}, over-prediction should not inflate b* beyond SLOPE_SIZE/2={SLOPE_SIZE // 2}"
+        if not _PER_SIDE:
+            assert b <= SLOPE_SIZE // 2, \
+                f"[{cfg['tag']}] b*={b}, over-prediction should not inflate b* beyond SLOPE_SIZE/2={SLOPE_SIZE // 2}"
     _run_score_test(score_E5_late_over, LABEL_CONFIGS, check, "Test 13: E-5 Late over-prediction")
+
+
+# ---------------------------------------------------------------------------
+# Detection taxonomy (early/late/exact/missed) — validated against the
+# synthetic scores whose timing is known by construction.
+# ---------------------------------------------------------------------------
+
+def test_detection_taxonomy():
+    """classify_detection labels each synthetic score by its true timing.
+
+    Runs in per_side mode (direction needs the two-sided b*). Each score fn
+    has a known ground-truth label; assert the stamped detection_type matches.
+    """
+    print("\n=== Test 14: detection taxonomy (per_side) ===")
+    cases = [
+        (score_C1_early,    'early'),
+        (score_C2_late,     'late'),
+        (score_C3_exact,    'exact'),
+        (score_E1_isolated, 'missed'),
+        (score_E2_missed,   'missed'),
+        (score_E3_partial,  'exact'),
+    ]
+    failures = []
+    for score_fn, expected in cases:
+        for cfg in LABEL_CONFIGS:
+            label    = make_label(cfg['anomalies'])
+            score    = score_fn(label)
+            per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=True)
+            for k, r in enumerate(per_anom):
+                got = r['detection_type']
+                ok  = (got == expected)
+                tag = "PASS" if ok else f"FAIL expected {expected}"
+                print(f"  {score_fn.__name__:<18} [{cfg['tag']:<13}] anomaly {k}  -> {got:<7} {tag}")
+                if not ok:
+                    failures.append(f"{score_fn.__name__} [{cfg['tag']}] anomaly {k}: got {got}, expected {expected}")
+    # Symmetric mode collapses early/late into 'lagged'.
+    label = make_label([(400, 419)])
+    r_sym = vus.compute_per_anomaly_adaptive_slicing(label, score_C2_late(label), per_side=False)[0]
+    if r_sym['detection_type'] != 'lagged':
+        failures.append(f"symmetric late: got {r_sym['detection_type']}, expected lagged")
+    print(f"  symmetric late -> {r_sym['detection_type']} "
+          f"({'PASS' if r_sym['detection_type'] == 'lagged' else 'FAIL expected lagged'})")
+    print("  PASS" if not failures else f"  FAIL ({len(failures)} failure(s))")
+    assert not failures, "; ".join(failures)
 
 
 # ---------------------------------------------------------------------------
@@ -386,9 +449,10 @@ def _run_structural_test(fn):
         print(f"  FAIL: {e}")
 
 
-def run_unit_tests(plot=False, slope_size=None):
-    global _PLOT, SLOPE_SIZE, vus
+def run_unit_tests(plot=False, slope_size=None, per_side=False):
+    global _PLOT, _PER_SIDE, SLOPE_SIZE, vus
     _PLOT = plot
+    _PER_SIDE = per_side
     if slope_size is not None and slope_size != SLOPE_SIZE:
         SLOPE_SIZE = slope_size
         vus = VUSNumpy(slope_size=SLOPE_SIZE, cumulative=True)
@@ -405,6 +469,7 @@ def run_unit_tests(plot=False, slope_size=None):
     test_score_E3_partial()
     test_score_E4_early_over()
     test_score_E5_late_over()
+    _run_structural_test(test_detection_taxonomy)
     print("\nAll unit tests done.")
 
 
@@ -441,7 +506,7 @@ def _select_interesting(fnames, labels, min_anomalies=3, n_top=5, dataset_filter
     return candidates[:n_top]
 
 
-def plot_per_anomaly_buffers(fname, timeseries, score, detector, per_anom, out_path, show=False, global_vus=None):
+def plot_per_anomaly_buffers(fname, timeseries, score, detector, per_anom, out_path, show=False, global_vus=None, mean_vus_adapt=None, per_side=False):
     T = len(timeseries)
     dataset = _dataset_tag(fname)
 
@@ -452,8 +517,9 @@ def plot_per_anomaly_buffers(fname, timeseries, score, detector, per_anom, out_p
     final_vus = per_anom[0].get('final_vus') if per_anom else None
     final_vus_str = f"  |  VUS (per-anomaly caps)={final_vus:.4f}" if final_vus is not None else ""
     global_vus_str = f"  |  VUS (no caps)={global_vus:.4f}" if global_vus is not None else ""
+    mean_vus_str = f"  |  mean VUS (per-anomaly)={mean_vus_adapt:.4f}" if mean_vus_adapt is not None else ""
     fig.suptitle(
-        f"[{dataset}]  {fname}  |  detector: {detector}{final_vus_str}{global_vus_str}",
+        f"[{dataset}]  {fname}  |  detector: {detector}{global_vus_str}{mean_vus_str}{final_vus_str}",
         fontsize=9, fontweight='bold',
     )
 
@@ -464,30 +530,54 @@ def plot_per_anomaly_buffers(fname, timeseries, score, detector, per_anom, out_p
     label_y = ts_max + 0.02 * (ts_max - ts_min or 1.0)
 
     for r in per_anom:
-        s, e, b = r['start'], r['end'], r['best']['buffer_val']
+        s, e = r['start'], r['end']
         length = e - s + 1
         ax_ts.axvspan(s, e + 1, color='red', alpha=0.25, linewidth=0, zorder=3)
-        if b > 0:
-            if s - b >= 0:
-                ax_ts.axvspan(max(0, s - b), s, color='orange', alpha=0.25, linewidth=0, zorder=2)
-            if e + 1 + b <= T:
-                ax_ts.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.25, linewidth=0, zorder=2)
         mid = (s + e) / 2.0
-        vus_score = float(r['vus'][r['best']['buffer_idx']])
-        ax_ts.annotate(
-            f'b*={b}\nlen={length}\nvus={vus_score:.3f}',
-            xy=(mid, label_y), xycoords='data',
-            fontsize=6, ha='center', va='bottom',
-            color='darkorange', fontweight='bold',
-        )
+        dtype = r.get('detection_type', '')
+        if per_side:
+            # Asymmetric buffers: left (orange) sized by b*_left, right (green) by b*_right.
+            b_left   = r['best_left']['buffer_val']
+            b_right  = r['best_right']['buffer_val']
+            vus_l    = float(r['best_left']['vus_score'])
+            vus_r    = float(r['best_right']['vus_score'])
+            if b_left > 0:
+                ax_ts.axvspan(max(0, s - b_left), s, color='orange', alpha=0.25, linewidth=0, zorder=2)
+            if b_right > 0:
+                ax_ts.axvspan(e + 1, min(T, e + 1 + b_right), color='seagreen', alpha=0.25, linewidth=0, zorder=2)
+            ax_ts.annotate(
+                f'{dtype.upper()}\nL={b_left}  R={b_right}\nlen={length}\nvL={vus_l:.3f}  vR={vus_r:.3f}',
+                xy=(mid, label_y), xycoords='data',
+                fontsize=6, ha='center', va='bottom',
+                color='darkorange', fontweight='bold',
+            )
+        else:
+            b = r['best']['buffer_val']
+            if b > 0:
+                if s - b >= 0:
+                    ax_ts.axvspan(max(0, s - b), s, color='orange', alpha=0.25, linewidth=0, zorder=2)
+                if e + 1 + b <= T:
+                    ax_ts.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.25, linewidth=0, zorder=2)
+            vus_score = float(r['vus'][r['best']['buffer_idx']])
+            ax_ts.annotate(
+                f'{dtype.upper()}\nb*={b}\nlen={length}\nvus={vus_score:.3f}',
+                xy=(mid, label_y), xycoords='data',
+                fontsize=6, ha='center', va='bottom',
+                color='darkorange', fontweight='bold',
+            )
 
-    ax_ts.legend(
-        handles=[
+    if per_side:
+        legend_handles = [
+            plt.matplotlib.patches.Patch(facecolor='red',      alpha=0.3, label='anomaly'),
+            plt.matplotlib.patches.Patch(facecolor='orange',   alpha=0.3, label='left buffer (b*_left)'),
+            plt.matplotlib.patches.Patch(facecolor='seagreen', alpha=0.3, label='right buffer (b*_right)'),
+        ]
+    else:
+        legend_handles = [
             plt.matplotlib.patches.Patch(facecolor='red',    alpha=0.3, label='anomaly'),
             plt.matplotlib.patches.Patch(facecolor='orange', alpha=0.3, label='buffer (b*)'),
-        ],
-        fontsize=7, loc='upper right',
-    )
+        ]
+    ax_ts.legend(handles=legend_handles, fontsize=7, loc='upper right')
     ax_ts.set_ylabel('value', fontsize=8)
     ax_ts.tick_params(labelsize=7, labelbottom=False)
     ax_ts.set_xlim(0, T - 1)
@@ -528,27 +618,44 @@ def run_real_data(args):
     load_kwargs = {'dataset': [args.dataset]} if args.dataset else {'load_all': True}
     fnames, timeseries, labels = tsb.load_timeseries(**load_kwargs)
 
-    print(f"Loading scores for {len(detectors)} detectors...")
-    scores, _ = tsb.load_scores_and_delete(fnames, timeseries, labels, detectors=detectors)
-
-    interesting = _select_interesting(
-        fnames, labels,
-        min_anomalies=args.min_anomalies,
-        n_top=args.n_interesting,
-    )
-
-    if not interesting:
-        print("No interesting series found. Try lowering --min-anomalies.")
+    if args.list_series:
+        print(f"\n{len(fnames)} series available:")
+        for i, fn in enumerate(fnames):
+            lengths = _get_anomaly_lengths(labels[i])
+            print(f"  {fn}  n_anom={len(lengths)}  lengths={sorted(lengths.tolist())}")
         return
 
-    print(f"\nSelected {len(interesting)} interesting series:")
-    for _, fn, lengths, diversity in interesting:
-        print(f"  {fn}  n_anom={len(lengths)}  lengths={sorted(lengths.tolist())}  diversity={diversity:.2f}")
+    if args.series:
+        matched = [(i, fn) for i, fn in enumerate(fnames) if args.series in fn]
+        if not matched:
+            print(f"No series matching '{args.series}'. Use --list-series to see available names.")
+            return
+        selected = [(i, fn, _get_anomaly_lengths(labels[i]), 0.0) for i, fn in matched]
+        print(f"\nSelected {len(selected)} series matching '{args.series}':")
+        for i, fn, lengths, _ in selected:
+            print(f"  {fn}  n_anom={len(lengths)}  lengths={sorted(lengths.tolist())}")
+    else:
+        selected_raw = _select_interesting(
+            fnames, labels,
+            min_anomalies=args.min_anomalies,
+            n_top=args.n_interesting,
+        )
+        if not selected_raw:
+            print("No interesting series found. Try lowering --min-anomalies.")
+            return
+        fname_to_idx = {fn: i for i, fn in enumerate(fnames)}
+        selected = [(fname_to_idx[fn], fn, lengths, diversity) for _, fn, lengths, diversity in selected_raw]
+        print(f"\nSelected {len(selected)} interesting series:")
+        for _, fn, lengths, diversity in selected:
+            print(f"  {fn}  n_anom={len(lengths)}  lengths={sorted(lengths.tolist())}  diversity={diversity:.2f}")
+
+    print(f"Loading scores for {len(detectors)} detectors...")
+    scores, _ = tsb.load_scores_and_delete(fnames, timeseries, labels, detectors=detectors)
 
     out_base = args.output_dir
     fname_to_idx = {fn: i for i, fn in enumerate(fnames)}
 
-    for _, fn, lengths, diversity in interesting:
+    for _, fn, lengths, _ in selected:
         idx = fname_to_idx.get(fn)
         if idx is None:
             print(f"\n  Skipping {fn} (dropped during score loading)")
@@ -564,26 +671,35 @@ def run_real_data(args):
         for det_idx, det in enumerate(detectors):
             score = sc[det_idx]
             try:
-                per_anom = vus_real.compute_per_anomaly_adaptive_slicing(lbl, score)
+                per_anom = vus_real.compute_per_anomaly_adaptive_slicing(lbl, score, per_side=args.per_side)
             except Exception as ex:
                 print(f"    [{det}] ERROR: {ex}")
                 continue
 
-            b_vals = [r['best']['buffer_val'] for r in per_anom]
             final_vus = per_anom[0].get('final_vus') if per_anom else None
+            mean_vus_adapt = float(np.mean([r['best']['vus_score'] for r in per_anom])) if per_anom else None
 
             (global_vus_curve, _), _ = vus_real.compute(lbl, score)
             global_vus = float(global_vus_curve[-1])
 
+            if args.per_side:
+                b_str = "b*(L,R) = " + str([(r['best_left']['buffer_val'], r['best_right']['buffer_val']) for r in per_anom])
+            else:
+                b_str = "b* = " + str([r['best']['buffer_val'] for r in per_anom])
             final_vus_str = f"  VUS(caps)={final_vus:.4f}" if final_vus is not None else ""
-            print(f"    [{det}] b* = {b_vals}{final_vus_str}  VUS(no caps)={global_vus:.4f}")
+            mean_vus_str = f"  mean_vus_adapt={mean_vus_adapt:.4f}" if mean_vus_adapt is not None else ""
+            types_str = "  types=" + str([r.get('detection_type') for r in per_anom]) if per_anom else ""
+            print(f"    [{det}] {b_str}  VUS(no caps)={global_vus:.4f}{mean_vus_str}{final_vus_str}{types_str}")
 
             if args.show_detail:
                 for k, r in enumerate(per_anom):
-                    vus_real._plot_anomaly_debug(lbl, score, r, k, len(per_anom), len(lbl))
+                    if args.per_side:
+                        vus_real._plot_anomaly_debug_per_side(lbl, score, r, k, len(per_anom), len(lbl), timeseries=ts)
+                    else:
+                        vus_real._plot_anomaly_debug(lbl, score, r, k, len(per_anom), len(lbl), timeseries=ts)
 
             out_path = os.path.join(out_base, fname_safe, f"{det}.png")
-            plot_per_anomaly_buffers(fn, ts, score, det, per_anom, out_path, show=args.show, global_vus=global_vus)
+            plot_per_anomaly_buffers(fn, ts, score, det, per_anom, out_path, show=args.show, global_vus=global_vus, mean_vus_adapt=mean_vus_adapt, per_side=args.per_side)
 
     print(f"\nAll plots saved to {os.path.abspath(out_base)}")
 
@@ -599,9 +715,20 @@ def parse_args():
     p.add_argument('--show',           action='store_true',
                    help='Display overview plots interactively instead of saving them to disk')
     p.add_argument('--show-detail',    action='store_true',
-                   help='Display per-anomaly debug plots (ratio curve, b* marked) one by one')
+                   help='Display per-anomaly debug plots (ratio curve, b* marked) one by one. '
+                        'With --per-side, shows the left and right ratio curves side by side.')
+    p.add_argument('--per-side',       action='store_true',
+                   help='Activate per-side adaptive buffer selection (a separate b* for each '
+                        'side of every anomaly). Applies to --real, --show, --show-detail and '
+                        'the unit tests; omit it to use the symmetric single-b* selection.')
     p.add_argument('--dataset',        type=str, default=None,
                    help='Filter to one dataset, e.g. YAHOO, NAB, UCR')
+    p.add_argument('--series',         type=str, default=None,
+                   help='Select a specific time series by substring match against its filename '
+                        '(e.g. "260" or "id_3"). Bypasses --n-interesting selection. '
+                        'Multiple matches are all processed; use --list-series to see available names.')
+    p.add_argument('--list-series',    action='store_true',
+                   help='List all available series filenames (after applying --dataset filter) and exit.')
     p.add_argument('--detector',       type=str, default=None,
                    help='Filter to one detector. If omitted, all detectors are loaded.')
     p.add_argument('--n-interesting',  type=int, default=5,
@@ -623,4 +750,4 @@ if __name__ == '__main__':
     if args.real:
         run_real_data(args)
     else:
-        run_unit_tests(plot=args.show, slope_size=args.slope_size)
+        run_unit_tests(plot=args.show, slope_size=args.slope_size, per_side=args.per_side)

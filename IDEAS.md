@@ -1,6 +1,6 @@
 # FF-VUS — Research Ideas & V2 Directions
 
-_Last updated: 2026-05-23_
+_Last updated: 2026-06-09_
 
 ---
 
@@ -12,8 +12,8 @@ _Last updated: 2026-05-23_
 |---|-------|---------|--------|
 | 9 | All-threshold evaluation | Main Focus | Active |
 | 1 | Per-anomaly decomposition | Main Focus | Active |
-| 8 | Detection taxonomy | Main Focus | Active |
-| 10 | Adaptive buffer expansion | Main Focus | Active |
+| 8 | Detection taxonomy | Main Focus | Implemented (early/late/exact/missed; over-prediction dropped) |
+| 10 | Adaptive buffer expansion | Main Focus | Implemented (per-anomaly + per-side) |
 | 12 | Decumulated ("denoised") VUS | Future Steps | Parked (prototype done) |
 | — | Corner cases (Sørbø & Ruocco) | Ideas to Decide On | Under review |
 | 2 | Performance localization map | Future Steps | Pending §1 |
@@ -92,7 +92,17 @@ Equal-weight per-anomaly averaging removes the recall-mass weighting and gives e
 
 **Implementation angle:** The buffer overlap geometry is already computed per anomaly in the `existence_optimized` loop (`vus_numpy.py`). The detection type should be readable with minimal overhead — no second pass needed. Open question from Paul: confirm exactly what intermediate values are already available and whether the full taxonomy can be derived from them.
 
-**Paper angle:** Combined with the per-anomaly decomposition (§1), this turns VUS into a full diagnostic framework: a per-anomaly *score* (§1) plus a per-anomaly *label* (§8). The contribution is then: faster + more interpretable — two independent novelty axes in one paper.
+**Implemented (2026-06-09):** `VUSNumpy.classify_detection(r, tol=0)` — a pure staticmethod that reads only the per-anomaly buffer widths chosen by `compute_per_anomaly_adaptive_slicing` (no extra computation). Each result dict is stamped with `r['detection_type']`. It builds directly on the per-side adaptive buffer (§10): `b*_left > 0` means the detection precedes the anomaly, `b*_right > 0` means it lags.
+
+- **per_side mode → `early` / `late` / `exact` / `missed`.** Both buffers `≤ tol` splits into `exact` vs `missed` by the *inside skill* — whether the marginal ratio at buffer 0 beats random (`ratio_left[0] > 1`). When both buffers grow, the larger side wins (ties → `late`).
+- **symmetric mode → `exact` / `missed` / `lagged`.** A single `b*` can't recover direction, so early+late collapse into `lagged`.
+- **Where the original E-types land:** E-1 Isolated FP and E-2 Missed → `missed` (the anomaly itself was not detected); E-3 Partial → `exact` (detection is inside).
+- **Dropped the over-prediction types (E-4/E-5, "broad") on purpose.** Over-prediction is a *precision* phenomenon orthogonal to timing and is **not** recoverable from `b*`: the adaptive argmax deliberately ignores flat over-regions (the marginal ratio is flat/decreasing there, so `b*` does not grow — exactly why the E-4/E-5 tests assert `b*` stays small). Catching it would need a separate excess-mass signal (fraction of score mass outside the rewarded `[start−b*_left, end+b*_right]` window). Deferred — keep the taxonomy to the clean 4-state timing axis.
+- `tol=0` for now (strict: any grown buffer counts); trivially tunable later.
+
+**Validation:** `test_detection_taxonomy` in `src/test_per_anomaly_buffer.py` (Test 14) asserts the label against every synthetic score whose timing is known by construction (C-1→early, C-2→late, C-3→exact, E-1/E-2→missed, E-3→exact, symmetric-late→lagged), across all 6 label configs. The label is surfaced in the `--show` overview annotations, the `--show-detail` debug titles (both symmetric and per-side), and the `--real` text summary (`types=[...]`).
+
+**Paper angle:** Combined with the per-anomaly decomposition (§1), this turns VUS into a full diagnostic framework: a per-anomaly *score* (§1) plus a per-anomaly *label* (§8). The contribution is then: faster + more interpretable — two independent novelty axes in one paper. Cheap aggregate figure: histogram `detection_type` per detector across a dataset to expose chronic-late / chronic-miss behaviour.
 
 ---
 
@@ -106,6 +116,8 @@ Equal-weight per-anomaly averaging removes the recall-mass weighting and gives e
 **Proposed fix:** Compute a per-anomaly statistic — e.g., internal variance of the ground-truth label segment — to determine whether the label is already over-extended. High variance (a spike surrounded by a wide labeled region) is a signal that the annotator's label already incorporates tolerance, so further buffer expansion should be suppressed or reduced. This makes buffer expansion *adaptive*: proportional to the anomaly's shape, not a global constant. The same metric could serve for identifying the right buffer length for a given anomaly.
 
 **Current implementation (2026-05-23):** Rather than modulating buffer by label shape, the implemented approach selects the best buffer from a ratio curve: `ratio(b) = cumVUS_detector(b) / E[cumVUS_random(b)]`. Three denominator variants are supported (`analytical`, `mc_bernoulli`, `mc_uniform`) and three selection methods (`argmax`, `elbow`, `first_peak`). A synthetic test suite (`test_adaptive_buffer.py`) covers 7 label structures × 8 detection types (C-1 through E-5) to validate selection behavior across the full taxonomy.
+
+**Per-anomaly slicing + per-side selection (2026-06-09):** `compute_per_anomaly_adaptive_slicing` selects `b*` independently per anomaly by slicing a window (midpoint to each neighbour) and taking the argmax of the *marginal* skill ratio. With `per_side=True` (the default) each anomaly scores its window twice — once with `reward_side='left'` (gives `b*_left`, the pre-anomaly buffer) and once with `'right'` (`b*_right`, post-anomaly) — so the two sides grow to different widths, and the final full-series VUS applies asymmetric caps. This is what makes the detection taxonomy (§8) possible: the left/right buffer split *is* the early/late signal. Guards kept are absence-of-signal only (R1, constant-score R4a, `min_signal_frac`); the heuristic gate/runaway/plateau/cap rules were dropped (still toggleable via `rules=` for ablation). See memory `project_per_anomaly_buffer`.
 
 **Open questions:**
 - What statistic best captures "already-extended" labels? Variance, IQR, or a spike detector on the label boundary?

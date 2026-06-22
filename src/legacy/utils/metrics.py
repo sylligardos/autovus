@@ -392,8 +392,10 @@ class metricor:
         P = np.sum(labels_original)											# total numer of positives (in the label)
         sequences = self.range_convers_new(labels_original)					# Initial anomaly sequences, before enlarging them with slopes
         l = self.new_sequence(labels_original, sequences, windowSize)		# Non-static segments, aka max slope
-        
+
         thresholds = np.sort(np.unique(score))[::-1]
+        if len(thresholds) > thre:
+            thresholds = thresholds[::len(thresholds) // thre]
         thre = thresholds.shape[0]
 
         tpr_3d = np.zeros((windowSize + 1, thre + 2))
@@ -475,6 +477,8 @@ class metricor:
         l = self.new_sequence(labels_original, seq, windowSize)
 
         thresholds = np.sort(np.unique(score))[::-1]
+        if len(thresholds) > thre:
+            thresholds = thresholds[::len(thresholds) // thre]
         thre = thresholds.shape[0]
         
         tpr_3d = np.zeros((windowSize + 1, thre + 2))
@@ -587,6 +591,8 @@ class metricor:
         l = self.new_sequence(labels_original, seq, windowSize)
 
         thresholds = np.sort(np.unique(score))[::-1]
+        if len(thresholds) > thre:
+            thresholds = thresholds[::len(thresholds) // thre]
         thre = thresholds.shape[0]
         
         tpr_3d = np.zeros((windowSize + 1, thre + 2))

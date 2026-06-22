@@ -21,6 +21,7 @@ from tsbadparser import TSBADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from legacy.sylli_metrics import sylli_get_metrics
+from vus_debug import compare_vus_steps
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,8 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     conf_matrix = 'dynamic_plus'
     interpolation = 'stepwise'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    thresholds='subsampled'
+    max_thresholds = 250
 
     ff_vus_numpy = VUSNumpy(
         slope_size=slope_size,
@@ -114,6 +117,8 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
         existence=existence,
         conf_matrix=conf_matrix,
         interpolation=interpolation,
+        thresholds=thresholds,
+        max_thresholds=max_thresholds,
     )
 
     ff_auc_numpy = VUSNumpy(
@@ -134,6 +139,8 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
         global_mask=global_mask,
         conf_matrix=conf_matrix,
         device=device,
+        thresholds=thresholds,
+        max_thresholds=max_thresholds,
     )
 
     ff_auc_torch = VUSTorch(
@@ -186,7 +193,7 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
             curr_result.update(ff_auc_time_analysis)
 
             # VUS-PR (reference)
-            vus_pr, vus_time = sylli_get_metrics(label, score, 'vus', slope_size)
+            vus_pr, vus_time = sylli_get_metrics(label, score, 'vus', slope_size, max_thresholds=max_thresholds)
             curr_result.update({'VUS-PR': vus_pr, 'VUS-PR time': vus_time})
 
             # FF-VUS-PR
@@ -236,6 +243,12 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
             })
             if not curr_result["VUS-PR equal"]:
                 problematic_timeseries.append((filename, detector))
+
+            cpu_err = curr_result["VUS-PR - FF-VUS-PR"]
+            gpu_err = curr_result["VUS-PR - FF-VUS-PR-GPU"]
+            if cpu_err > 1e-10 or gpu_err > 1e-4:
+                debug_info = compare_vus_steps(label, score, ff_vus_numpy, ff_vus_torch)
+                curr_result.update(debug_info)
 
             results.append(curr_result)
 

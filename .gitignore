@@ -1,5 +1,6 @@
 # Project-specific ignores
 CLAUDE.md
+.claude/
 run_interactive.sh
 /data
 /models
@@ -184,3 +185,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Local-only symlink to the (separate) Overleaf paper repo — never commit
+references/ffvus-paper

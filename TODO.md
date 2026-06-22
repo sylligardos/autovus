@@ -94,7 +94,11 @@ _Claim: VUS = (1/K) Σ VUS_k. New `compute_per_anomaly()` method. The inner loop
 ### §8 — Detection taxonomy
 _Classify each detection event as C-1 (Early), C-2 (Late), C-3 (Exact), E-1 (Isolated FP), E-2 (Missed), E-3 (Partial), E-4 (Early-over-prediction), E-5 (Late-over-prediction). Buffer overlap geometry is already computed per anomaly in `existence_optimized` — may need no second pass._
 
-- [ ] Write down proposed solution and open questions
+- [x] Write down proposed solution and open questions
+- [x] Implemented (2026-06-09): `VUSNumpy.classify_detection(r, tol=0)` staticmethod, stamped as `r['detection_type']` by `compute_per_anomaly_adaptive_slicing`. Derived purely from the per-side `b*` (no second pass). per_side → `early`/`late`/`exact`/`missed`; symmetric → `exact`/`missed`/`lagged`. `exact` vs `missed` split by inside-skill (`ratio[0] > 1`).
+- [x] Dropped over-prediction (E-4/E-5, "broad") from the taxonomy — a precision phenomenon orthogonal to timing, not recoverable from `b*` (argmax ignores flat over-regions). Would need a separate excess-mass signal; deferred. Keep to the 4-state timing axis.
+- [x] Validation `test_detection_taxonomy` (Test 14 in `test_per_anomaly_buffer.py`) + surfaced in `--show` / `--show-detail` / `--real`.
+- [ ] Aggregate figure: per-detector `detection_type` histogram across TSB-AD (paper deliverable).
 
 ### §10 — Adaptive buffer expansion
 _Per-anomaly buffer modulated by a label shape statistic (e.g. variance) to avoid penalizing detectors when annotators already labeled wide regions. Open questions: which statistic, smooth vs. hard suppression, interaction with §1._
@@ -120,6 +124,7 @@ FF-VUS computes VUS for all buffers in a single pass. This unlocks automatic buf
 #### Next steps
 - [x] Decide selection method — **argmax on the MARGINAL (de-cumulated) skill ratio** (2026-06-02, supervisor-approved). The marginal ratio peaks at the detection's true extent; the cumulative argmax overshot by ~2x. Kept only the no-signal guards (R1, constant-score R4a, `min_signal_frac=1e-3` for numerically-flat slices); dropped the detection gate, runaway guard, plateau, and hard cap (they departed from VUS by dropping/limiting real detections). Rules still toggleable via `rules=` for ablation. See memory `project_per_anomaly_buffer`.
 - [x] Evaluate the proposed approach — implemented in `compute_per_anomaly_adaptive_slicing`; 13/13 synthetic unit tests in `test_per_anomaly_buffer.py` (early/late/exact/partial/missed/FP/over-prediction); cross-dataset sweep over 23 TSB-AD datasets shows non-trivial, sensible b* distributions (~56% zero, rest varied; large buffers only on clustered/oscillatory regions = honest VUS inclusions). Showcase + failure case plots saved under `experiments/`.
+- [x] Per-side selection (2026-06-09): `compute_per_anomaly_adaptive_slicing(per_side=True)` (now default) selects an independent `b*_left`/`b*_right` per anomaly (score the window once per `reward_side`), final VUS uses asymmetric caps. `per_side=False` is bit-identical to the old symmetric path. Required making the function path direction-aware (`add_slopes_function`/`distance_from_anomaly`/`_per_point_cap`). This is the substrate for §8.
 
 **After brainstorming:** tick the ideas going into this submission and update Phase 4 accordingly.
 

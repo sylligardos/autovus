@@ -2,11 +2,16 @@
 Stage 1 of the Adjusted-VUS ranking study: compute & save the raw scores.
 
 For every (dataset, time series, detector) it runs the two-step adaptive pipeline
-  1. selection  -> per-anomaly b* via compute_per_anomaly_adaptive_slicing
-  2. scoring    -> score_adapt (raw VUS, ratio_*, Adjusted VUS skill_*)
+  1. selection  -> per-side per-anomaly b* (b*_left, b*_right) via
+                   compute_per_anomaly_adaptive_slicing(per_side=True), plus the
+                   detection taxonomy (early/late/exact/missed) per anomaly
+  2. scoring    -> score_adapt with the asymmetric per-side caps (raw VUS, ratio_*,
+                   Adjusted VUS skill_*)
 plus the community VUS baseline (legacy sylli implementation, same L), and writes
-one long-format row per pair to a CSV. Runtimes (selection / scoring / baseline)
-are recorded so we can see whether the method is prohibitively slow.
+one long-format row per pair to a CSV. Floating-point score dust is floored once
+(VUSNumpy.floor_dust) so selection and scoring use the identical cleaned score.
+Runtimes (selection / scoring / baseline) are recorded so we can see whether the
+method is prohibitively slow.
 
 The CSV is the source of truth reused by analyze_ranking_adapt.py (Stage 2) and by
 the paper; it is appended incrementally (crash-safe, progress visible).
@@ -42,7 +47,11 @@ def _n_anomalies(label):
 COLUMNS = [
     'dataset', 'filename', 'detector', 'n_anomalies', 'note',
     'b_star_mean', 'b_star_min', 'b_star_max',
-    'vus_adapt', 'vus_full', 'vus_community',
+    # per-side buffers (asymmetric selection); b_star_* above is the dominant side
+    'b_left_mean', 'b_left_max', 'b_right_mean', 'b_right_max',
+    # detection taxonomy counts (early/late/exact/missed) over this series' anomalies
+    'n_early', 'n_late', 'n_exact', 'n_missed',
+    'vus_adapt', 'mean_vus_adapt', 'vus_full', 'vus_community',
     'ratio_adapt_A', 'ratio_adapt_B', 'ratio_full_A', 'ratio_full_B',
     'skill_adapt_A', 'skill_adapt_B', 'skill_full_A', 'skill_full_B',
     'denom_adapt', 'denom_full',
@@ -121,14 +130,23 @@ def compute_ranking(dataset, slope_size, testing, experiment_dir, with_community
                 rows.append(row)
                 continue
 
+            # Clean floating-point dust ONCE so selection and scoring share the
+            # identical score (compute_per_anomaly_adaptive_slicing would otherwise
+            # clean internally but score_adapt would not, desyncing the two steps).
+            score = VUSNumpy.floor_dust(score)
+
             t0 = perf_counter()
-            sel = vus.compute_per_anomaly_adaptive_slicing(label, score)
+            sel = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=True, dust_floor=0)
             selection_time = perf_counter() - t0
 
-            b_star = np.array([r['best']['buffer_val'] for r in sel])
+            b_left  = np.array([r['best_left']['buffer_val']  for r in sel])
+            b_right = np.array([r['best_right']['buffer_val'] for r in sel])
+            b_star  = np.array([r['best']['buffer_val'] for r in sel])   # dominant side (back-compat)
+            mean_vus_adapt = float(np.mean([r['best']['vus_score'] for r in sel]))
+            types = [r['detection_type'] for r in sel]
 
             t1 = perf_counter()
-            out = vus.score_adapt(label, score, b_star)
+            out = vus.score_adapt(label, score, b_star_left=b_left, b_star_right=b_right)
             scoring_time = perf_counter() - t1
 
             community_vus, community_time = (np.nan, np.nan)
@@ -144,9 +162,20 @@ def compute_ranking(dataset, slope_size, testing, experiment_dir, with_community
                 'b_star_mean': float(np.mean(b_star)),
                 'b_star_min':  int(np.min(b_star)),
                 'b_star_max':  int(np.max(b_star)),
+                # per-side buffers
+                'b_left_mean':  float(np.mean(b_left)),
+                'b_left_max':   int(np.max(b_left)),
+                'b_right_mean': float(np.mean(b_right)),
+                'b_right_max':  int(np.max(b_right)),
+                # detection taxonomy counts
+                'n_early':  int(types.count('early')),
+                'n_late':   int(types.count('late')),
+                'n_exact':  int(types.count('exact')),
+                'n_missed': int(types.count('missed')),
                 # raw VUS
-                'vus_adapt':     out['vus_adapt'],
-                'vus_full':      out['vus_full'],
+                'vus_adapt':      out['vus_adapt'],
+                'mean_vus_adapt': mean_vus_adapt,
+                'vus_full':       out['vus_full'],
                 'vus_community': community_vus,
                 # unbounded ratio diagnostic
                 'ratio_adapt_A': out['ratio_adapt_A'],

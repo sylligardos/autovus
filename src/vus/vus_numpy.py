@@ -146,14 +146,20 @@ def _apply_penalized_rules(
     obj, ratio, slope_values,
     argmax_ratio_idx, obj_argmax_idx, plateau_idx,
     score=None, core_mask=None, gate_thr=None,
-    rules=None,
+    rules=None, flat_eps=1e-4,
 ):
     """Apply all buffer-selection rules and return (result_idx, fired_dict).
 
     Rules (evaluated in priority order):
         R4a — degenerate score (near-constant, no signal)          → b*=0
         R4b — detection gate (core max score ≤ gate percentile)    → b*=0
-        R1  — no buffer has positive discounted skill              → b*=0
+        R1  — no buffer offers meaningful skill                     → b*=0
+              fires when the skill ratio is flat (np.ptp(ratio) <= flat_eps)
+              or no buffer beats random by more than flat_eps
+              (obj = ratio-1 never exceeds flat_eps). The flat_eps tolerance
+              prevents a genuinely no-skill side (ratio ≡ 1 up to ~1e-14
+              floating-point jitter) from defeating the guard and letting
+              argmax wander to a large buffer.
         R3  — runaway guard (raw argmax at rightmost edge)         → b*=0
         R2  — first-plateau preference (parsimony tie-break)
               if disabled, fall back to pure obj argmax
@@ -196,9 +202,13 @@ def _apply_penalized_rules(
     if fired['r4a'] or fired['r4b']:
         return 0, fired
 
-    # R1 — no buffer has positive discounted skill
+    # R1 — no buffer offers meaningful skill (flat ratio, or skill never
+    # exceeds flat_eps). The flat-ratio clause (np.ptp) catches a side with no
+    # reachable detection: its ratio is constant (≈1, or any constant level)
+    # up to ~1e-14 jitter, which would otherwise slip past `obj > flat_eps` and
+    # send argmax to a large buffer on pure rounding noise.
     if r['r1']:
-        fired['r1'] = bool(not np.any(obj > 0))
+        fired['r1'] = bool(np.ptp(ratio) <= flat_eps or not np.any(obj > flat_eps))
 
     # R3 — runaway guard
     if r['r3'] and not fired['r1']:
@@ -213,7 +223,7 @@ def _apply_penalized_rules(
 
 
 def select_best_buffer(ratio, slope_values, method='penalized', tau=None, plateau_eps=1e-3, plot=False,
-                       rules=None, score=None, core_mask=None, gate_thr=None):
+                       rules=None, score=None, core_mask=None, gate_thr=None, flat_eps=1e-4):
     """
     Given a ratio curve ratio[b] = VUS_detector(b) / E[VUS_random(b)], select the best
     buffer index using the specified method.
@@ -269,7 +279,7 @@ def select_best_buffer(ratio, slope_values, method='penalized', tau=None, platea
             obj, ratio, slope_values,
             argmax_idx, obj_argmax_idx, plateau_idx,
             score=score, core_mask=core_mask, gate_thr=gate_thr,
-            rules=rules,
+            rules=rules, flat_eps=flat_eps,
         )
 
         if plot:
@@ -432,10 +442,11 @@ class VUSNumpy():
         elif self.thresholds_mode == 'pr_relevant':
             return self.get_pr_relevant_thresholds(label, score)
         elif self.thresholds_mode == 'pr_relevant_fuzzy':
-            return self.get_pr_relevant_thresholds_vus(label_slopes, score)
+            return self.get_pr_relevant_thresholds_vus(label_slopes, score, max_thresholds=self.max_thresholds)
 
     @time_it
-    def compute(self, label, score, thresholds=None, adaptive=False, max_buffer_per_anomaly=None, adaptive_opts=None):
+    def compute(self, label, score, thresholds=None, adaptive=False, max_buffer_per_anomaly=None,
+                max_buffer_per_anomaly_left=None, max_buffer_per_anomaly_right=None, adaptive_opts=None):
         """
         Main computation function for the VUS metric.
 
@@ -450,7 +461,7 @@ class VUSNumpy():
                 original pipeline), buffers grow uniformly to slope_size.
             adaptive_opts (dict, optional): forwarded as kwargs to
                 find_adaptive_buffer when adaptive=True (e.g. method, tau,
-                detection_gate, gate_margin, gate_strong_frac, plot). None uses
+                detection_gate, gate_mcompute_perargin, gate_strong_frac, plot). None uses
                 its defaults.
 
         Returns:
@@ -468,13 +479,18 @@ class VUSNumpy():
             ((start_no_edges, end_no_edges), (start_with_edges, end_with_edges)), extra_time_anom_coord = self.get_anomalies_coordinates(label)
             time_anom_coord += extra_time_anom_coord
 
-        pos, time_pos = self.distance_from_anomaly(label, start_with_edges, end_with_edges)
+        (pos_left, pos_right), time_pos = self.distance_from_anomaly(label, start_with_edges, end_with_edges)
 
-        cap = None
-        if max_buffer_per_anomaly is not None:
-            cap = self._per_point_cap(label, start_with_edges, end_with_edges, max_buffer_per_anomaly)
+        cap_left = cap_right = None
+        b_left, b_right = self._resolve_caps(
+            max_buffer_per_anomaly, max_buffer_per_anomaly_left, max_buffer_per_anomaly_right)
+        if b_left is not None:
+            cap_left, cap_right = self._per_point_cap(
+                label, start_with_edges, end_with_edges, b_left, b_right)
 
-        labels, time_slopes = self.add_slopes(label, start_no_edges, end_no_edges, pos, cap=cap)
+        labels, time_slopes = self.add_slopes(
+            label, start_no_edges, end_no_edges, pos_left, pos_right,
+            cap_left=cap_left, cap_right=cap_right)
 
         if thresholds is None:
             thresholds, time_thresholds = self._dispatch_thresholds(label, score, labels)
@@ -485,7 +501,6 @@ class VUSNumpy():
             time_thresholds = 0
 
         sm, time_sm = self.get_score_mask(score, thresholds)
-        # print(thresholds.shape)
         if self.global_mask:
             # print(score_nonmask.shape, thresholds.shape)
             # extra_sm, extra_time_sm = self.get_score_mask(score_nonmask, thresholds)
@@ -627,18 +642,28 @@ class VUSNumpy():
 
         ratio = vus_cumulative / np.clip(denom_curve, 1e-10, None)
 
-        # Buffer selection runs on the MARGINAL (per-buffer) skill ratio, recovered
-        # by de-cumulating the cumulative VUS and denominator. VUS averages AUC over
-        # [0, b], so its cumulative ratio keeps climbing past where the detection
-        # ends and its argmax overshoots the true extent by ~2x. The marginal ratio
-        # peaks exactly where the detection stops. De-cumulation is only valid for
-        # the 'mean' aggregation (a true running mean); other modes fall back to the
-        # cumulative ratio.
+        # Buffer selection runs on the PER-STEP INCREMENTAL GAIN ratio (View 2 from
+        # IDEAS §12). View 1 (inverted running mean) still grows monotonically because
+        # slope labels are cumulative in b — a detection at b stays a TP for all b'>b.
+        # View 2 takes the first difference of View 1, isolating the reward *first*
+        # earned at each buffer step. This produces a spike at the detection's true
+        # extent and is flat elsewhere.
+        #
+        # Old method (View 1 — inverted running mean, still monotone):
+        # if marginal and self.aggregation_mode == 'mean':
+        #     n_idx      = np.arange(1, len(vus_cumulative) + 1)
+        #     marg_vus   = np.diff(vus_cumulative * n_idx, prepend=0.0)
+        #     marg_denom = np.diff(denom_curve   * n_idx, prepend=0.0)
+        #     sel_ratio  = marg_vus / np.clip(marg_denom, 1e-10, None)
+        # else:
+        #     sel_ratio  = ratio
         if marginal and self.aggregation_mode == 'mean':
             n_idx      = np.arange(1, len(vus_cumulative) + 1)
             marg_vus   = np.diff(vus_cumulative * n_idx, prepend=0.0)
             marg_denom = np.diff(denom_curve   * n_idx, prepend=0.0)
-            sel_ratio  = marg_vus / np.clip(marg_denom, 1e-10, None)
+            incr_vus   = np.diff(marg_vus,   prepend=0.0)
+            incr_denom = np.diff(marg_denom, prepend=0.0)
+            sel_ratio  = incr_vus / np.clip(incr_denom, 1e-10, None)
         else:
             sel_ratio  = ratio
 
@@ -732,12 +757,166 @@ class VUSNumpy():
             'best':           best,
         }
 
-    def compute_per_anomaly_adaptive_slicing(self, label, score, plot=False, tau_floor=10, gate_margin=10, gate_strong_frac=0.8, min_signal_frac=1e-3, rules=None):
+    def _select_window_buffer(self, win_label, win_score, tau_k, score_scale,
+                              gate_margin, gate_strong_frac, min_signal_frac, rules):
+        """Run adaptive VUS on one anomaly window and return its result dict.
+
+        Uses the current self.reward_side, so callers can flip the side around
+        this call to select a buffer for one side only. Applies the no-signal
+        guard (generalised R4a) and the reachable-buffer cap in place on
+        result['best'].
+        """
+        (result_k, _), _ = self.compute(
+            win_label, win_score, adaptive=True,
+            adaptive_opts={
+                'method': 'penalized',
+                'marginal': True,
+                'tau': tau_k,
+                'detection_gate': False,
+                'gate_margin': gate_margin,
+                'gate_strong_frac': gate_strong_frac,
+                'plot': False,
+                'rules': rules,   # None -> pure argmax; dict -> ablation rules
+            },
+        )
+
+        best = result_k['best']
+
+        # Reachable-buffer cap. The window is a hard slice: past its edges there
+        # is no time series, so a buffer cannot be placed there. The VUS soft
+        # label still grows beyond the edge (a larger slope_size makes the ramp
+        # shallower, so the soft value at a fixed position keeps rising toward 1)
+        # -- that is pure ramp inflation over already-included points, not a wider
+        # detection. When a detection sits flush against a window edge this makes
+        # the marginal skill ratio climb monotonically and argmax runs to
+        # slope_size. Restrict b* to the room actually available on the rewarded
+        # side(s): left/right room for one-sided selection, their min for the
+        # symmetric ('both') buffer (it is shared, so it must fit on BOTH sides).
+        ones = np.flatnonzero(win_label > 0)
+        if ones.size:
+            Lw         = len(win_label)
+            left_room  = int(ones[0])               # samples left of the core
+            right_room = int(Lw - 1 - ones[-1])     # samples right of the core
+            if self.reward_side == 'left':
+                room = left_room
+            elif self.reward_side == 'right':
+                room = right_room
+            else:                                   # 'both' -> shared buffer
+                room = min(left_room, right_room)
+
+            if best['buffer_val'] > room:
+                sel_ratio = result_k['ratio']
+                allowed   = self.slope_values <= room
+                new_idx   = int(np.argmax(np.where(allowed, sel_ratio, -np.inf)))
+                # No-skill guard within the reachable range (mirrors R1): if no
+                # reachable buffer beats random, none is worth placing -> b*=0.
+                if not np.any((sel_ratio[allowed] - 1.0) > 1e-4):
+                    new_idx = 0
+                best['buffer_idx'] = new_idx
+                best['buffer_val'] = int(self.slope_values[new_idx])
+                best['ratio']      = float(sel_ratio[new_idx])
+                if 'vus_score' in best:
+                    best['vus_score'] = float(result_k['vus'][new_idx])
+
+            # Truncate the selection ratio beyond the reachable buffer. Past the
+            # window edge the curve is pure ramp inflation over already-included
+            # points (see above), so it is not a meaningful skill signal. NaN-ing
+            # it stops the debug plot at the window edge instead of drawing the
+            # misleading climbing tail. reachable_buffer is stored for the plot.
+            result_k['ratio'] = np.where(self.slope_values <= room, result_k['ratio'], np.nan)
+            result_k['reachable_buffer'] = int(room)
+
+        # No-signal guard (generalised R4a): if this window holds no score above
+        # min_signal_frac of the detector's global scale, there is no detection to
+        # include -> b*=0, regardless of where argmax fell.
+        slice_max = float(np.max(win_score)) if win_score.size else 0.0
+        if best['buffer_val'] != 0 and (score_scale <= 0 or slice_max < min_signal_frac * score_scale):
+            best['buffer_idx'] = 0
+            best['buffer_val'] = 0
+            best['ratio']      = float(result_k['ratio'][0])
+            if 'vus_score' in best:
+                best['vus_score'] = float(result_k['vus'][0])
+        return result_k
+
+    @staticmethod
+    def classify_detection(r, tol=0):
+        """Label a per-anomaly result by detection timing (no extra computation).
+
+        Reads only the buffer widths already chosen by
+        ``compute_per_anomaly_adaptive_slicing``. A grown pre-anomaly (left)
+        buffer means the detector fired before the anomaly; a grown post-anomaly
+        (right) buffer means it fired after. ``b*=0`` is overloaded (exact vs
+        missed), so it is split by the inside skill, i.e. whether the marginal
+        ratio at buffer 0 beats random.
+
+        per_side results (carry 'best_left'/'best_right'/'ratio_left'):
+            'missed' : no skill inside and neither buffer grew
+            'exact'  : detected inside, neither buffer needed (b*_left,b*_right<=tol)
+            'early'  : left buffer grew  (detection precedes the anomaly)
+            'late'   : right buffer grew (detection lags the anomaly)
+                       when both grow, the larger side wins (ties -> 'late').
+
+        symmetric results (single 'best', direction unknown):
+            'missed' / 'exact' / 'lagged' (b* > tol)
+
+        Args:
+            r   (dict): one entry from compute_per_anomaly_adaptive_slicing.
+            tol (int) : buffer widths <= tol count as "not grown" (default 0).
+        """
+        if 'best_left' in r:
+            b_left  = r['best_left']['buffer_val']
+            b_right = r['best_right']['buffer_val']
+            if b_left <= tol and b_right <= tol:
+                return 'exact' if float(r['ratio_left'][0]) > 1.0 else 'missed'
+            return 'early' if b_left - b_right > tol else 'late'
+
+        b = r['best']['buffer_val']
+        if b <= tol:
+            return 'exact' if float(r['ratio'][0]) > 1.0 else 'missed'
+        return 'lagged'
+
+    @staticmethod
+    def floor_dust(score, dust_floor=1e-6):
+        """Snap floating-point dust to zero; returns a cleaned COPY (never mutates).
+
+        Some detectors (e.g. AnomalyTransformer, via exp()/softmax underflow) emit
+        scores like 5e-33 or 1e-24 that are numerically nonzero but carry no signal.
+        Each distinct dust value becomes its own threshold at the very bottom of the
+        PR curve, and when an adaptive buffer grows just far enough to reach a dust
+        point sitting outside the core it flips that point from a false-positive into
+        a fractional true-positive. That nudges precision in the bottom band,
+        producing a spurious micro-bump in the per-buffer skill ratio exactly at the
+        buffer width that reaches the dust -- which argmax then latches onto (e.g.
+        b*_right=4 for a detection that actually sits squarely inside the anomaly).
+
+        The floor is RELATIVE to the detector's own scale (|score| < dust_floor *
+        max|score|), so it is invariant to un-normalised score ranges; with the usual
+        [0, 1] min-max normalisation it is just an absolute 1e-6 cutoff. dust_floor
+        of 0/None disables it (returns score unchanged, as an array).
+        """
+        score = np.asarray(score, dtype=float)
+        if not dust_floor or score.size == 0:
+            return score
+        smax = float(np.max(np.abs(score)))
+        if smax <= 0:
+            return score
+        return np.where(np.abs(score) < dust_floor * smax, 0.0, score)
+
+    def compute_per_anomaly_adaptive_slicing(self, label, score, plot=False, tau_floor=10, gate_margin=10, gate_strong_frac=0.8, min_signal_frac=1e-3, rules=None, per_side=True, dust_floor=1e-6):
         """Per-anomaly adaptive buffer selection.
 
         For each anomaly k, slices a window spanning half the distance to its
         neighbors on each side, runs cumulative VUS on that window, and selects
         b* independently. This lets short and long anomalies pick different buffers.
+
+        When ``per_side=True`` (the default), each anomaly selects TWO buffers, one
+        per side: the window is scored once with reward_side='left' (b*_left, the
+        pre-anomaly buffer) and once with reward_side='right' (b*_right, the
+        post-anomaly buffer). This roughly doubles the per-window cost but lets the
+        left and right of an anomaly grow to different widths. The final full-series
+        VUS is then computed with these asymmetric per-side caps. reward_side is
+        restored afterwards. Pass ``per_side=False`` to fall back to the original
+        symmetric selection (a single b* per anomaly, shared by both sides).
 
         Buffer selection (default) is PURE ARGMAX on the marginal (per-buffer)
         skill ratio: b* is the buffer width that best captures the detector's skill
@@ -759,6 +938,11 @@ class VUSNumpy():
             rules (dict or None): None (default) selects pure argmax on the marginal
                 ratio. A dict (e.g. {'r4b': True}) runs the corresponding rule
                 ablation through _apply_penalized_rules.
+            dust_floor (float): relative cutoff below which scores are snapped to
+                zero before any buffer selection. Scores with magnitude <
+                dust_floor * max(|score|) are treated as numerical underflow, not
+                signal (see body for why this removes spurious buffer growth). Set
+                to 0/None to disable.
 
         After selecting b* for every anomaly, the full series is run through the
         normal cumulative VUS once with these per-anomaly caps (see
@@ -771,9 +955,16 @@ class VUSNumpy():
                 'start'     (int)        : anomaly start index in original series
                 'end'       (int)        : anomaly end index in original series
                 'window'    (tuple)      : (l_k, r_k) slice indices used
-                'best'      (dict)       : select_best_buffer result (buffer_idx, buffer_val, ratio)
+                'best'      (dict)       : select_best_buffer result (buffer_idx, buffer_val, ratio).
+                    In per_side mode this is the side with the larger b* (for
+                    backward compatibility with symmetric consumers).
                 'vus'       (np.ndarray) : per-buffer VUS curve for this anomaly's window
                 'final_vus' (float)      : full-series VUS with per-anomaly caps applied
+                'detection_type' (str)   : timing label from classify_detection
+                    (per_side: early/late/exact/missed; symmetric:
+                    exact/missed/lagged).
+            In per_side mode each dict additionally carries 'best_left',
+            'best_right', 'vus_left', 'vus_right', 'ratio_left', 'ratio_right'.
         """
         if not self.cumulative:
             raise ValueError("compute_per_anomaly_adaptive_slicing requires cumulative=True")
@@ -785,10 +976,11 @@ class VUSNumpy():
         if n_anomalies == 0:
             return []
 
-        # Compute thresholds once from the full score so the scale is global.
-        # Without this, each window selects thresholds locally and tiny noise
-        # values (e.g. 1e-9) become the effective "top" threshold in that slice.
-        # global_thresholds, _ = self.get_unique_thresholds(score, max_thresholds=self.max_thresholds)
+        # Floor floating-point dust to zero before any buffer selection (see
+        # floor_dust for the full rationale). Selection and the downstream
+        # score_adapt MUST run on the SAME cleaned score, so callers driving both
+        # steps should clean once with floor_dust and pass dust_floor=0 here.
+        score = self.floor_dust(score, dust_floor)
 
         # Detector scale over the whole series: a slice whose scores never rise to a
         # meaningful fraction of this has no detection in it (just numerical noise),
@@ -797,55 +989,67 @@ class VUSNumpy():
         # 1, where argmax would otherwise latch onto a floating-point blip.
         score_scale = float(np.max(score)) if score.size else 0.0
 
+        orig_side = self.reward_side
         results = []
-        for k in range(n_anomalies):
-            l_k = int((ends[k - 1] + starts[k]) // 2) if k > 0 else 0
-            r_k = int((ends[k] + starts[k + 1]) // 2) if k < n_anomalies - 1 else T
+        try:
+            for k in range(n_anomalies):
+                l_k = int((ends[k - 1] + starts[k]) // 2) if k > 0 else 0
+                r_k = int((ends[k] + starts[k + 1]) // 2) if k < n_anomalies - 1 else T
 
-            tau_k = max(int(ends[k] - starts[k] + 1), tau_floor)
+                tau_k = max(int(ends[k] - starts[k] + 1), tau_floor)
+                win_label, win_score = label[l_k:r_k], score[l_k:r_k]
 
-            # (result_k, _), _ = self.compute(label[l_k:r_k], score[l_k:r_k], thresholds=global_thresholds, adaptive=True)
-            # Default: pure argmax on the marginal skill ratio (rules=None below).
-            # Pass rules=<dict> to run the rule-based ablation instead.
-            (result_k, _), _ = self.compute(
-                label[l_k:r_k], score[l_k:r_k], adaptive=True,
-                adaptive_opts={
-                    'method': 'penalized',
-                    'marginal': True,
-                    'tau': tau_k,
-                    'detection_gate': False,
-                    'gate_margin': gate_margin,
-                    'gate_strong_frac': gate_strong_frac,
-                    'plot': False,
-                    'rules': rules,   # None -> pure argmax; dict -> ablation rules
-                },
-            )
+                r = {'start': int(starts[k]), 'end': int(ends[k]), 'window': (l_k, r_k)}
 
-            # No-signal guard (generalised R4a): if this anomaly's window holds no
-            # score above min_signal_frac of the detector's global scale, there is no
-            # detection to include -> b*=0, regardless of where argmax fell.
-            best       = result_k['best']
-            slice_max  = float(np.max(score[l_k:r_k])) if r_k > l_k else 0.0
-            if best['buffer_val'] != 0 and (score_scale <= 0 or slice_max < min_signal_frac * score_scale):
-                best['buffer_idx'] = 0
-                best['buffer_val'] = 0
-                best['ratio']      = float(result_k['ratio'][0])
-                if 'vus_score' in best:
-                    best['vus_score'] = float(result_k['vus'][0])
+                if not per_side:
+                    # Default: pure argmax on the marginal skill ratio (rules=None).
+                    # Pass rules=<dict> to run the rule-based ablation instead.
+                    result_k = self._select_window_buffer(
+                        win_label, win_score, tau_k, score_scale,
+                        gate_margin, gate_strong_frac, min_signal_frac, rules)
+                    r['best']  = result_k['best']
+                    r['vus']   = result_k['vus']
+                    r['ratio'] = result_k['ratio']
+                else:
+                    # Select a buffer for each side independently by scoring the
+                    # same window once per reward_side.
+                    self.reward_side = 'left'
+                    res_l = self._select_window_buffer(
+                        win_label, win_score, tau_k, score_scale,
+                        gate_margin, gate_strong_frac, min_signal_frac, rules)
+                    self.reward_side = 'right'
+                    res_r = self._select_window_buffer(
+                        win_label, win_score, tau_k, score_scale,
+                        gate_margin, gate_strong_frac, min_signal_frac, rules)
+                    self.reward_side = orig_side
 
-            r = {
-                'start':  int(starts[k]),
-                'end':    int(ends[k]),
-                'window': (l_k, r_k),
-                'best':   result_k['best'],
-                'vus':    result_k['vus'],
-                'ratio':  result_k['ratio'],
-            }
-            results.append(r)
+                    r['best_left']   = res_l['best']
+                    r['best_right']  = res_r['best']
+                    r['vus_left']    = res_l['vus']
+                    r['vus_right']   = res_r['vus']
+                    r['ratio_left']  = res_l['ratio']
+                    r['ratio_right'] = res_r['ratio']
+                    # Backward-compat single 'best': the side with the larger b*.
+                    dom = res_l if res_l['best']['buffer_val'] >= res_r['best']['buffer_val'] else res_r
+                    r['best']  = dom['best']
+                    r['vus']   = dom['vus']
+                    r['ratio'] = dom['ratio']
+
+                results.append(r)
+        finally:
+            self.reward_side = orig_side
 
         # Recompute VUS on the full series, capping each anomaly's buffer at its b*.
-        b_star = np.array([r['best']['buffer_val'] for r in results])
-        (vus_curve, _), _ = self.compute(label, score, max_buffer_per_anomaly=b_star)
+        if per_side:
+            b_left  = np.array([r['best_left']['buffer_val']  for r in results])
+            b_right = np.array([r['best_right']['buffer_val'] for r in results])
+            (vus_curve, _), _ = self.compute(
+                label, score,
+                max_buffer_per_anomaly_left=b_left,
+                max_buffer_per_anomaly_right=b_right)
+        else:
+            b_star = np.array([r['best']['buffer_val'] for r in results])
+            (vus_curve, _), _ = self.compute(label, score, max_buffer_per_anomaly=b_star)
         final_vus = float(vus_curve[-1])
 
         # Baseline: full-buffer VUS with no adaptive selection (largest buffer).
@@ -853,12 +1057,16 @@ class VUSNumpy():
         baseline_vus = float(baseline_curve[-1])
 
         for r in results:
-            r['final_vus']    = final_vus
-            r['baseline_vus'] = baseline_vus
+            r['final_vus']      = final_vus
+            r['baseline_vus']   = baseline_vus
+            r['detection_type'] = self.classify_detection(r)
 
         if plot:
             for k, r in enumerate(results):
-                self._plot_anomaly_debug(label, score, r, k, n_anomalies, T)
+                if per_side:
+                    self._plot_anomaly_debug_per_side(label, score, r, k, n_anomalies, T)
+                else:
+                    self._plot_anomaly_debug(label, score, r, k, n_anomalies, T)
 
         return results
 
@@ -931,7 +1139,7 @@ class VUSNumpy():
 
         return results
 
-    def _plot_anomaly_debug(self, label, score, r, k, n_anomalies, T):
+    def _plot_anomaly_debug(self, label, score, r, k, n_anomalies, T, timeseries=None):
         s, e     = r['start'], r['end']
         l_k, r_k = r['window']
         b        = r['best']['buffer_val']
@@ -949,43 +1157,61 @@ class VUSNumpy():
         baseline_vus = r.get('baseline_vus')
         final_vus_str    = f"  |  VUS(caps)={final_vus:.4f}"    if final_vus    is not None else ""
         baseline_vus_str = f"  |  VUS(no-adapt)={baseline_vus:.4f}" if baseline_vus is not None else ""
+        dtype_str        = f"  |  {r['detection_type'].upper()}" if r.get('detection_type') else ""
         fig.suptitle(
             f"Anomaly {k + 1}/{n_anomalies}  |  "
             f"range [{s}, {e}]  len={e - s + 1}  |  "
             f"window [{l_k}, {r_k}]  |  "
-            f"b*={b}  VUS(local)={vus_score:.4f}{final_vus_str}{baseline_vus_str}",
+            f"b*={b}  VUS(local)={vus_score:.4f}{final_vus_str}{baseline_vus_str}{dtype_str}",
             fontsize=9, fontweight='bold',
         )
 
+        # parse all anomaly spans for context shading
+        _diff = np.diff(np.concatenate([[0], label.astype(int), [0]]))
+        all_starts = np.where(_diff > 0)[0]
+        all_ends   = np.where(_diff < 0)[0] - 1
+
         # --- time series ---
-        ax_ts.plot(np.arange(T), label.astype(float), color='lightcoral',
-                   linewidth=0.8, alpha=0.6, label='label')
+        if timeseries is not None:
+            ax_ts.plot(np.arange(T), timeseries, color='dimgray', linewidth=0.6, zorder=2)
+        else:
+            ax_ts.plot(np.arange(T), label.astype(float), color='lightcoral',
+                       linewidth=0.8, alpha=0.6, label='label')
         ax_ts.axvspan(l_k, r_k, color='steelblue', alpha=0.06, linewidth=0, zorder=1)
         ax_ts.axvline(l_k, color='steelblue', linewidth=1, linestyle='--', alpha=0.5)
         ax_ts.axvline(r_k, color='steelblue', linewidth=1, linestyle='--', alpha=0.5)
-        ax_ts.axvspan(s, e + 1, color='red', alpha=0.3, linewidth=0, zorder=2)
+        for as_, ae in zip(all_starts, all_ends):
+            if as_ == s and ae == e:
+                ax_ts.axvspan(s, e + 1, color='red', alpha=0.45, linewidth=0, zorder=3)
+            else:
+                ax_ts.axvspan(as_, ae + 1, color='red', alpha=0.2, linewidth=0, zorder=2)
         if b > 0:
-            ax_ts.axvspan(max(0, s - b), s,         color='orange', alpha=0.35, linewidth=0, zorder=2)
-            ax_ts.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.35, linewidth=0, zorder=2)
+            ax_ts.axvspan(max(0, s - b), s,         color='orange', alpha=0.25, linewidth=0, zorder=2)
+            ax_ts.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.25, linewidth=0, zorder=2)
         ax_ts.legend(
             handles=[
                 plt.matplotlib.patches.Patch(facecolor='steelblue', alpha=0.2, label='window'),
-                plt.matplotlib.patches.Patch(facecolor='red',        alpha=0.3, label='anomaly'),
-                plt.matplotlib.patches.Patch(facecolor='orange',     alpha=0.4, label=f'buffer b*={b}'),
+                plt.matplotlib.patches.Patch(facecolor='red',        alpha=0.45, label='current anomaly'),
+                plt.matplotlib.patches.Patch(facecolor='red',        alpha=0.2, label='other anomalies'),
+                plt.matplotlib.patches.Patch(facecolor='orange',     alpha=0.3, label=f'buffer b*={b}'),
             ],
             fontsize=7, loc='upper right',
         )
-        ax_ts.set_ylabel('label', fontsize=8)
+        ax_ts.set_ylabel('value' if timeseries is not None else 'label', fontsize=8)
         ax_ts.set_xlim(0, T - 1)
         ax_ts.tick_params(labelsize=7, labelbottom=False)
 
         # --- score ---
         ax_sc.plot(np.arange(T), score, color='dimgray', linewidth=0.7, zorder=2)
         ax_sc.axvspan(l_k, r_k, color='steelblue', alpha=0.06, linewidth=0, zorder=1)
-        ax_sc.axvspan(s, e + 1, color='red',    alpha=0.25, linewidth=0, zorder=3)
+        for as_, ae in zip(all_starts, all_ends):
+            if as_ == s and ae == e:
+                ax_sc.axvspan(s, e + 1, color='red', alpha=0.3, linewidth=0, zorder=3)
+            else:
+                ax_sc.axvspan(as_, ae + 1, color='red', alpha=0.12, linewidth=0, zorder=2)
         if b > 0:
-            ax_sc.axvspan(max(0, s - b), s,         color='orange', alpha=0.3, linewidth=0, zorder=2)
-            ax_sc.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.3, linewidth=0, zorder=2)
+            ax_sc.axvspan(max(0, s - b), s,         color='orange', alpha=0.25, linewidth=0, zorder=2)
+            ax_sc.axvspan(e + 1, min(T, e + 1 + b), color='orange', alpha=0.25, linewidth=0, zorder=2)
         ax_sc.set_ylabel('score', fontsize=8)
         ax_sc.tick_params(labelsize=7, labelbottom=False)
 
@@ -1001,6 +1227,117 @@ class VUSNumpy():
         ax_ratio.set_xlabel('buffer', fontsize=8)
         ax_ratio.set_xlim(0, int(self.slope_values[-1]))
         ax_ratio.tick_params(labelsize=7)
+
+        plt.tight_layout()
+        plt.show()
+
+    def _plot_anomaly_debug_per_side(self, label, score, r, k, n_anomalies, T, timeseries=None):
+        """Per-anomaly debug plot for per_side selection.
+
+        Time series + score on top, then the LEFT and RIGHT marginal-ratio curves
+        side by side, each with its own b* marked. Mirrors _plot_anomaly_debug but
+        renders the two one-sided selections of a per_side result dict (keys
+        best_left/best_right, ratio_left/ratio_right, vus_left/vus_right).
+        """
+        s, e     = r['start'], r['end']
+        l_k, r_k = r['window']
+        b_left   = r['best_left']['buffer_val']
+        b_right  = r['best_right']['buffer_val']
+        bi_left  = r['best_left']['buffer_idx']
+        bi_right = r['best_right']['buffer_idx']
+        ratio_l  = r.get('ratio_left')
+        ratio_r  = r.get('ratio_right')
+
+        fig, axd = plt.subplot_mosaic(
+            [['ts', 'ts'], ['sc', 'sc'], ['rl', 'rr']],
+            figsize=(14, 8),
+            gridspec_kw={'height_ratios': [2, 1, 1.5]},
+        )
+        ax_ts, ax_sc, ax_rl, ax_rr = axd['ts'], axd['sc'], axd['rl'], axd['rr']
+        ax_sc.sharex(ax_ts)
+        ax_rr.sharey(ax_rl)   # common ratio scale so the two sides are comparable
+
+        final_vus    = r.get('final_vus')
+        baseline_vus = r.get('baseline_vus')
+        final_vus_str    = f"  |  VUS(caps)={final_vus:.4f}"        if final_vus    is not None else ""
+        baseline_vus_str = f"  |  VUS(no-adapt)={baseline_vus:.4f}" if baseline_vus is not None else ""
+        dtype_str        = f"  |  {r['detection_type'].upper()}" if r.get('detection_type') else ""
+        fig.suptitle(
+            f"Anomaly {k + 1}/{n_anomalies}  |  range [{s}, {e}]  len={e - s + 1}  |  "
+            f"window [{l_k}, {r_k}]  |  b*_left={b_left}  b*_right={b_right}"
+            f"{final_vus_str}{baseline_vus_str}{dtype_str}",
+            fontsize=9, fontweight='bold',
+        )
+
+        # parse all anomaly spans for context shading
+        _diff = np.diff(np.concatenate([[0], label.astype(int), [0]]))
+        all_starts = np.where(_diff > 0)[0]
+        all_ends   = np.where(_diff < 0)[0] - 1
+
+        # --- time series (left buffer orange, right buffer green) ---
+        if timeseries is not None:
+            ax_ts.plot(np.arange(T), timeseries, color='dimgray', linewidth=0.6, zorder=2)
+        else:
+            ax_ts.plot(np.arange(T), label.astype(float), color='lightcoral',
+                       linewidth=0.8, alpha=0.6, label='label')
+        ax_ts.axvspan(l_k, r_k, color='steelblue', alpha=0.06, linewidth=0, zorder=1)
+        ax_ts.axvline(l_k, color='steelblue', linewidth=1, linestyle='--', alpha=0.5)
+        ax_ts.axvline(r_k, color='steelblue', linewidth=1, linestyle='--', alpha=0.5)
+        for as_, ae in zip(all_starts, all_ends):
+            if as_ == s and ae == e:
+                ax_ts.axvspan(s, e + 1, color='red', alpha=0.45, linewidth=0, zorder=3)
+            else:
+                ax_ts.axvspan(as_, ae + 1, color='red', alpha=0.2, linewidth=0, zorder=2)
+        if b_left > 0:
+            ax_ts.axvspan(max(0, s - b_left), s, color='orange', alpha=0.25, linewidth=0, zorder=2)
+        if b_right > 0:
+            ax_ts.axvspan(e + 1, min(T, e + 1 + b_right), color='seagreen', alpha=0.25, linewidth=0, zorder=2)
+        ax_ts.legend(
+            handles=[
+                plt.matplotlib.patches.Patch(facecolor='steelblue', alpha=0.2, label='window'),
+                plt.matplotlib.patches.Patch(facecolor='red',        alpha=0.45, label='current anomaly'),
+                plt.matplotlib.patches.Patch(facecolor='red',        alpha=0.2, label='other anomalies'),
+                plt.matplotlib.patches.Patch(facecolor='orange',     alpha=0.3, label=f'left b*={b_left}'),
+                plt.matplotlib.patches.Patch(facecolor='seagreen',   alpha=0.3, label=f'right b*={b_right}'),
+            ],
+            fontsize=7, loc='upper right',
+        )
+        ax_ts.set_ylabel('value' if timeseries is not None else 'label', fontsize=8)
+        ax_ts.set_xlim(0, T - 1)
+        ax_ts.tick_params(labelsize=7, labelbottom=False)
+
+        # --- score ---
+        ax_sc.plot(np.arange(T), score, color='dimgray', linewidth=0.7, zorder=2)
+        ax_sc.axvspan(l_k, r_k, color='steelblue', alpha=0.06, linewidth=0, zorder=1)
+        for as_, ae in zip(all_starts, all_ends):
+            if as_ == s and ae == e:
+                ax_sc.axvspan(s, e + 1, color='red', alpha=0.3, linewidth=0, zorder=3)
+            else:
+                ax_sc.axvspan(as_, ae + 1, color='red', alpha=0.12, linewidth=0, zorder=2)
+        if b_left > 0:
+            ax_sc.axvspan(max(0, s - b_left), s, color='orange', alpha=0.25, linewidth=0, zorder=2)
+        if b_right > 0:
+            ax_sc.axvspan(e + 1, min(T, e + 1 + b_right), color='seagreen', alpha=0.25, linewidth=0, zorder=2)
+        ax_sc.set_ylabel('score', fontsize=8)
+        ax_sc.tick_params(labelsize=7)
+
+        # --- ratio curves side by side ---
+        sv = self.slope_values
+        for ax, ratio, b_idx, b_val, title, color in [
+            (ax_rl, ratio_l, bi_left,  b_left,  'left (pre-anomaly buffer)',   'orange'),
+            (ax_rr, ratio_r, bi_right, b_right, 'right (post-anomaly buffer)', 'seagreen'),
+        ]:
+            if ratio is not None:
+                ax.plot(sv, ratio, color='steelblue', linewidth=1.5, label='ratio')
+                ax.axhline(1.0, color='gray', linestyle=':', linewidth=0.8, alpha=0.7)
+                ax.axvline(sv[b_idx], color=color, linewidth=2.0, label=f'b*={b_val}')
+                ax.scatter([sv[b_idx]], [ratio[b_idx]], color=color, s=60, zorder=5)
+                ax.legend(fontsize=8, loc='upper right')
+            ax.set_title(title, fontsize=8)
+            ax.set_xlabel('buffer', fontsize=8)
+            ax.set_xlim(0, int(sv[-1]))
+            ax.tick_params(labelsize=7)
+        ax_rl.set_ylabel('ratio', fontsize=8)
 
         plt.tight_layout()
         plt.show()
@@ -1232,49 +1569,79 @@ class VUSNumpy():
     @time_it
     def distance_from_anomaly(self, label, start_points, end_points, clip=False):
         '''
-        For every point in the label, returns a time series that shows the distance
-        of that point to its closest anomaly. Compute the distance of each point 
-        to every anomaly and keep the minimum.
+        For every point, return TWO direction-aware distance arrays:
+
+          pos_left[t]  = distance to the nearest anomaly START at or ahead of t
+                         (start - t for start >= t), inf if none. Drives the LEFT
+                         buffer, the pre-anomaly ramp on [start - slope_size, start].
+          pos_right[t] = distance to the nearest anomaly END at or behind t
+                         (t - end for end <= t), inf if none. Drives the RIGHT
+                         buffer, the post-anomaly ramp on [end, end + slope_size].
+
+        For side='both', add_slopes_function takes the per-point minimum of the
+        two, which reproduces the old min|t - boundary| behaviour exactly for
+        points outside anomalies (inside points are forced to 1 regardless). The
+        old code conflated the two sides via abs(); splitting them lets the
+        function path honour reward_side like the precomputed path does.
         '''
         length = len(label)
 
-        pos = np.full(length, np.inf)
+        pos_left = np.full(length, np.inf)
+        pos_right = np.full(length, np.inf)
         if start_points.shape[0] == 0 and end_points.shape[0] == 0:
-            return pos
-        
-        anomaly_boundaries = np.concat([start_points, end_points])
+            return pos_left, pos_right
+
         indices = np.arange(length)[:, None]
 
-        distances = np.abs(indices - anomaly_boundaries)
-        pos = np.min(distances, axis=1)
-        
+        if start_points.shape[0]:
+            sd = start_points[None, :] - indices       # start - t ; >=0 when t at/left of start
+            sd = np.where(sd >= 0, sd, np.inf)
+            pos_left = sd.min(axis=1)
+        if end_points.shape[0]:
+            ed = indices - end_points[None, :]          # t - end ; >=0 when t at/right of end
+            ed = np.where(ed >= 0, ed, np.inf)
+            pos_right = ed.min(axis=1)
+
         if clip:
-            pos[label.astype(bool)] = 0
-            np.clip(pos, a_min=0, a_max=self.slope_size, out=pos)
+            # Inside-anomaly points contribute 0 distance on both sides. Clip the
+            # ramp reach to slope_size, but preserve inf (no boundary on that side)
+            # so a one-sided point gets no spurious ramp.
+            inside = label.astype(bool)
+            pos_left[inside] = 0
+            pos_right[inside] = 0
+            fl = np.isfinite(pos_left)
+            fr = np.isfinite(pos_right)
+            pos_left[fl] = np.clip(pos_left[fl], 0, self.slope_size)
+            pos_right[fr] = np.clip(pos_right[fr], 0, self.slope_size)
 
-        return pos
+        return pos_left, pos_right
 
-    def _per_point_cap(self, label, start_points, end_points, max_buffer_per_anomaly):
-        """For every point, the maximum buffer length of its nearest anomaly.
+    def _per_point_cap(self, label, start_points, end_points, b_left, b_right):
+        """Per-point left/right buffer caps from per-anomaly caps.
 
-        The nearest anomaly is the one whose [start, end] interval is closest to
-        the point (0 distance if the point is inside it). Points inside an anomaly
-        are forced to 1 in add_slopes_function regardless, so their cap is moot.
+        Each point inherits the cap of its nearest anomaly (the one whose
+        [start, end] interval is closest, 0 distance if inside). The left and
+        right caps are looked up separately so each side of an anomaly can carry
+        a different b*. Points inside an anomaly are forced to 1 in
+        add_slopes_function regardless, so their cap is moot.
 
         Args:
             label (np.ndarray): binary label, shape (T,)
             start_points, end_points (np.ndarray): anomaly boundaries with edges,
                 shape (n_anomalies,)
-            max_buffer_per_anomaly (np.ndarray): per-anomaly cap, shape (n_anomalies,)
+            b_left, b_right (np.ndarray): per-anomaly caps, shape (n_anomalies,)
 
         Returns:
-            np.ndarray of shape (T,), float, the cap of the nearest anomaly.
+            (cap_left, cap_right): two float arrays of shape (T,), the left and
+            right cap of each point's nearest anomaly.
         """
-        b_star = np.asarray(max_buffer_per_anomaly, dtype=float)
-        if b_star.shape[0] != start_points.shape[0]:
+        b_left = np.asarray(b_left, dtype=float)
+        b_right = np.asarray(b_right, dtype=float)
+        n = start_points.shape[0]
+        if b_left.shape[0] != n or b_right.shape[0] != n:
             raise ValueError(
-                f"max_buffer_per_anomaly has {b_star.shape[0]} entries but there "
-                f"are {start_points.shape[0]} anomalies"
+                f"per-anomaly caps have {b_left.shape[0]}/{b_right.shape[0]} entries "
+                f"but there are {n} anomalies"
             )
 
         T = len(label)
@@ -1284,7 +1651,31 @@ class VUSNumpy():
                           idx - end_points[None, :])      # right of the interval
         np.clip(dist, a_min=0, a_max=None, out=dist)      # inside -> 0
         nearest = np.argmin(dist, axis=1)
-        return b_star[nearest]
+        return b_left[nearest], b_right[nearest]
+
+    def _resolve_caps(self, sym, left, right):
+        """Normalise the three cap kwargs into per-anomaly (b_left, b_right).
+
+        Accepts either the symmetric ``max_buffer_per_anomaly`` (applied to both
+        sides) or the per-side pair, never both. Returns (None, None) when no cap
+        is requested.
+        """
+        if left is not None or right is not None:
+            if sym is not None:
+                raise ValueError(
+                    "pass either max_buffer_per_anomaly or the per-side "
+                    "max_buffer_per_anomaly_left/right, not both"
+                )
+            if left is None or right is None:
+                raise ValueError(
+                    "per-side caps require BOTH max_buffer_per_anomaly_left and "
+                    "max_buffer_per_anomaly_right"
+                )
+            return np.asarray(left, dtype=float), np.asarray(right, dtype=float)
+        if sym is not None:
+            sym = np.asarray(sym, dtype=float)
+            return sym, sym
+        return None, None
 
     @time_it
     def get_anomalies_coordinates(self, label: np.array):
@@ -1310,26 +1701,16 @@ class VUSNumpy():
             
         return (start_no_edges, end_no_edges), (start_with_edges, end_with_edges)
 
-    def add_slopes_function(self, label, pos, cap=None):
+    def _side_ramp(self, pos, cap):
+        """Buffer ramp contribution for ONE side, shape (n_slopes-1, T).
+
+        ``pos`` is the direction-aware distance for this side (pos_left or
+        pos_right); points with no boundary on this side carry inf and are masked
+        out (stay 0). ``cap`` (shape (T,) or None) caps each point's effective
+        slope size at min(slope_values[i], cap[t]); None gives the uniform buffer.
         """
-        Compute the slopes of a label using a predefined function.
-
-        This function is may be a bit slower than the precomputed version for small buffer lengths or small time series.
-        It is significantly faster for big buffer lengths and long time series though.
-
-        The pos part requires about 10% of the total execution time.
-
-        If ``cap`` is provided (shape (T,), the per-point maximum buffer length of
-        the nearest anomaly), each point's effective slope size is capped at
-        ``min(slope_values[i], cap[t])``. A point farther than its anomaly's cap
-        is 0 at every buffer index, so that anomaly's buffer freezes at its cap
-        and never grows further. When ``cap`` is None the original uniform-buffer
-        behaviour is preserved exactly.
-        """
-        T = len(label)
-        f_pos = np.zeros((self.n_slopes, T))
-        f_pos[0] = label
-
+        T = pos.shape[0]
+        out = np.zeros((self.n_slopes - 1, T))
         pos_b = pos[None, :]               # (1, T)
 
         if cap is None:
@@ -1340,14 +1721,45 @@ class VUSNumpy():
             mask = sv >= pos_b                 # one mask, reused
 
             np.subtract(1.0, self._inv_slope_factor * pos_b,
-                        out=f_pos[1:], where=mask)
+                        out=out, where=mask)
         else:
             # Per-point effective slope size: min(buffer index, nearest anomaly's cap).
             sv_eff = np.minimum(self.slope_values[1:, None], cap[None, :])  # (n_slopes-1, T)
             mask = (sv_eff >= pos_b) & (sv_eff > 0)
             with np.errstate(divide='ignore', invalid='ignore'):
                 ramp = 1.0 - (1.0 - self.zita) * pos_b / sv_eff
-            np.copyto(f_pos[1:], ramp, where=mask)
+            np.copyto(out, ramp, where=mask)
+
+        return out
+
+    def add_slopes_function(self, label, pos_left, pos_right, cap_left=None, cap_right=None):
+        """
+        Compute the slopes of a label using a predefined function.
+
+        This function is may be a bit slower than the precomputed version for small buffer lengths or small time series.
+        It is significantly faster for big buffer lengths and long time series though.
+
+        The pos part requires about 10% of the total execution time.
+
+        Honours ``reward_side``: the left buffer (driven by ``pos_left``) and the
+        right buffer (``pos_right``) are computed independently and combined per
+        the configured side ('both' -> elementwise max, matching the precomputed
+        path; 'left'/'right' -> that side only). ``cap_left``/``cap_right`` (shape
+        (T,) or None) cap each side's per-point effective slope size; None keeps
+        the uniform-buffer behaviour for that side.
+        """
+        T = len(label)
+        f_pos = np.zeros((self.n_slopes, T))
+        f_pos[0] = label
+
+        if self.n_slopes > 1:
+            if self.reward_side == 'left':
+                f_pos[1:] = self._side_ramp(pos_left, cap_left)
+            elif self.reward_side == 'right':
+                f_pos[1:] = self._side_ramp(pos_right, cap_right)
+            else:  # 'both': max of the two one-sided ramps
+                f_pos[1:] = self._side_ramp(pos_left, cap_left)
+                np.maximum(f_pos[1:], self._side_ramp(pos_right, cap_right), out=f_pos[1:])
 
         f_pos[1:, label.astype(bool)] = 1
 
@@ -1379,15 +1791,17 @@ class VUSNumpy():
         return result
     
     @time_it
-    def add_slopes(self, label, start_points, end_points, pos, cap=None, plot=False):
-        if cap is not None:
+    def add_slopes(self, label, start_points, end_points, pos_left, pos_right,
+                   cap_left=None, cap_right=None, plot=False):
+        if cap_left is not None or cap_right is not None:
             # The precomputed path applies a uniform slope_size to every anomaly
             # and cannot cap per anomaly, so route through the function path.
-            slopes = self.add_slopes_function(label, pos, cap=cap)
+            slopes = self.add_slopes_function(label, pos_left, pos_right,
+                                              cap_left=cap_left, cap_right=cap_right)
         elif self.add_slopes_mode == 'precomputed':
             slopes = self.add_slopes_precomputed(label, start_points, end_points)
         else:
-            slopes = self.add_slopes_function(label, pos)
+            slopes = self.add_slopes_function(label, pos_left, pos_right)
 
         # t0 = time.time(); slopes     = self.add_slopes_precomputed(label, start_points, end_points);      t_orig = time.time() - t0
         # t0 = time.time(); slopes_new = self.add_slopes_function(label, pos); t_fast = time.time() - t0
@@ -1485,8 +1899,8 @@ class VUSNumpy():
 
         for k, (start, end) in enumerate(zip(start_points[1:], end_points[:-1])):
             distance = start - end
-            overlap = (2 * self.slope_size) - distance        
-            if overlap > 0:
+            overlap = (2 * self.slope_size) - distance
+            if overlap >= 0:  # >= 0 (not > 0) so the exact distance == 2*slope_size touch case merges, matching existence_optimized and the legacy VUS
                 index = math.ceil((self.slope_size - (overlap // 2)) / self.step)
                 n_anomalies[index:] -= 1
                 all_start_points[index:, (k + 1)] = -1
@@ -1582,16 +1996,15 @@ class VUSNumpy():
         However, it is only ~5 times faster than the trivial implementation
         and ~80 times slower than the optimized one on CPU.
 
-        Additionally, due to impelementation specific reasons, it is not equal to the
-        previous implementation by an average error of 0.005. It is not wrong per say
-        but acts differently in the edge case where the slopes of two anomalies meet
-        on an even step.
-
-        TODO: Identify and characterize the exact edge cases where this diverges from
-        existence_optimized. The error is ~0.005 on average but the worst case and
-        the conditions that trigger it are unknown. This is also the implementation
-        used by VUSTorch (compute_existence), so any discrepancy vs the numpy optimized
-        path applies there too. See vus_torch.py::compute_existence.
+        Grouping correction (see the `onset` block below): the raw contiguity-based
+        stairs merges two anomalies as soon as their buffers become *adjacent*, whereas
+        the reference (existence_optimized / the legacy VUS) merges them only when the
+        buffers *overlap*. Those two conditions differ by exactly one slope row, and only
+        when the inter-anomaly distance D is odd (this was the historical ~0.005 average
+        divergence). Re-inserting the missing group boundary makes this match
+        existence_optimized and the legacy VUS exactly when step divides (D-1)/2 (always
+        true for step=1). VUSTorch::compute_existence uses the same algorithm and needs
+        the same correction to gain parity; see vus_torch.py::compute_existence.
         """
         # Compute mask for relevant points
         if not self.global_mask:
@@ -1601,10 +2014,25 @@ class VUSNumpy():
         # Normalize labels to 0 or 1
         norm_labels = (labels > 0).astype(np.int8)
 
-        # Compute step function (stairs)
-        diff = np.diff(norm_labels, prepend=np.zeros((norm_labels.shape[0], 1)), axis=1)
-        diff = np.clip(diff, 0, 1)
-        stairs = np.cumsum(diff, axis=1)
+        # Compute step function (stairs): mark the start of each contiguous slope run
+        onset = np.diff(norm_labels, prepend=np.zeros((norm_labels.shape[0], 1)), axis=1)
+        onset = np.clip(onset, 0, 1)
+
+        # Grouping correction: split anomaly pairs whose buffers are merely adjacent (not
+        # overlapping) so the grouping matches existence_optimized / the legacy VUS. The
+        # split lands on the single slope row where adjacency first occurs (buffer w =
+        # (D-1)/2), at the boundary cell the reference uses (ends[k] + w + 1 == starts[k+1] - w).
+        base = norm_labels[0]  # row 0 = unbuffered label = anomaly cores
+        edges = np.diff(np.concatenate([[0], base, [0]]))
+        starts = np.where(edges == 1)[0]
+        ends = np.where(edges == -1)[0] - 1
+        for k in range(len(starts) - 1):
+            distance = starts[k + 1] - ends[k]
+            half = (distance - 1) // 2
+            if distance % 2 == 1 and 0 < half <= self.slope_size and half % self.step == 0:
+                onset[half // self.step, ends[k] + half + 1] = 1
+
+        stairs = np.cumsum(onset, axis=1)
         labels_stairs = norm_labels * stairs
 
         # Multiply every score with every slope
@@ -1852,7 +2280,9 @@ class VUSNumpy():
         return np.diff(vus_curve * indices, prepend=0.0)
 
 
-    def _build_capped_labels(self, label, max_buffer_per_anomaly):
+    def _build_capped_labels(self, label, max_buffer_per_anomaly,
+                             max_buffer_per_anomaly_left=None,
+                             max_buffer_per_anomaly_right=None):
         """Rebuild the (masked) capped slope array + original T.
 
         Mirrors compute()'s preamble (get_anomalies_coordinates -> create_safe_mask
@@ -1862,8 +2292,10 @@ class VUSNumpy():
         score_adapt needs it to compute the random-VUS denominator on the identical
         buffer configuration.
 
-        max_buffer_per_anomaly=None reproduces the uniform full-buffer (non-adaptive)
-        configuration.
+        Caps follow the same convention as compute(): pass either the symmetric
+        ``max_buffer_per_anomaly`` (both sides) or the per-side pair
+        ``max_buffer_per_anomaly_left`` / ``max_buffer_per_anomaly_right``. All
+        None reproduces the uniform full-buffer (non-adaptive) configuration.
 
         Returns:
             (labels, T): the slope array (n_slopes, T_masked) and the ORIGINAL series
@@ -1875,14 +2307,19 @@ class VUSNumpy():
         if self.global_mask:
             label = label[safe_mask]
             ((s_no, e_no), (s_ed, e_ed)), _ = self.get_anomalies_coordinates(label)
-        pos, _ = self.distance_from_anomaly(label, s_ed, e_ed)
-        cap = None
-        if max_buffer_per_anomaly is not None:
-            cap = self._per_point_cap(label, s_ed, e_ed, max_buffer_per_anomaly)
-        labels, _ = self.add_slopes(label, s_no, e_no, pos, cap=cap)
+        (pos_left, pos_right), _ = self.distance_from_anomaly(label, s_ed, e_ed)
+        cap_left = cap_right = None
+        b_left, b_right = self._resolve_caps(
+            max_buffer_per_anomaly, max_buffer_per_anomaly_left, max_buffer_per_anomaly_right)
+        if b_left is not None:
+            cap_left, cap_right = self._per_point_cap(label, s_ed, e_ed, b_left, b_right)
+        labels, _ = self.add_slopes(label, s_no, e_no, pos_left, pos_right,
+                                    cap_left=cap_left, cap_right=cap_right)
         return labels, T
 
-    def _normalized_vus(self, label, score, max_buffer_per_anomaly, denom='analytical', K=100, rng=None):
+    def _normalized_vus(self, label, score, max_buffer_per_anomaly,
+                        max_buffer_per_anomaly_left=None, max_buffer_per_anomaly_right=None,
+                        denom='analytical', K=100, rng=None):
         """Per-buffer VUS over its random baseline, under one cap configuration.
 
         Numerator: cumulative VUS curve under the given per-anomaly caps (the
@@ -1894,11 +2331,19 @@ class VUSNumpy():
             ratio_A = VUS / E[VUS_random]          (ratio of means; integral/integral)
             ratio_B = mean_b( A[b] / g[b] )         (mean of ratios; per-buffer divide)
 
-        max_buffer_per_anomaly=None gives the uniform full-buffer (non-adaptive) case.
-        PR-only: the b-dependent random baseline is only meaningful for VUS-PR.
+        Caps follow compute()'s convention: symmetric ``max_buffer_per_anomaly`` OR
+        the per-side pair (left/right), never both; all None gives the uniform
+        full-buffer (non-adaptive) case. PR-only: the b-dependent random baseline is
+        only meaningful for VUS-PR.
         """
-        (vus_curve, _), _ = self.compute(label, score, max_buffer_per_anomaly=max_buffer_per_anomaly)
-        labels, T   = self._build_capped_labels(label, max_buffer_per_anomaly)
+        (vus_curve, _), _ = self.compute(
+            label, score,
+            max_buffer_per_anomaly=max_buffer_per_anomaly,
+            max_buffer_per_anomaly_left=max_buffer_per_anomaly_left,
+            max_buffer_per_anomaly_right=max_buffer_per_anomaly_right)
+        labels, T   = self._build_capped_labels(
+            label, max_buffer_per_anomaly,
+            max_buffer_per_anomaly_left, max_buffer_per_anomaly_right)
         denom_curve = self._compute_denom_curve(labels, T, denom, K, rng)
 
         A = self.decumulate(vus_curve)
@@ -1925,13 +2370,20 @@ class VUSNumpy():
             'denom_curve': denom_curve,
         }
 
-    def score_adapt(self, label, score, b_star, denom='analytical', K=100, rng=None):
+    def score_adapt(self, label, score, b_star=None, b_star_left=None, b_star_right=None,
+                    denom='analytical', K=100, rng=None):
         """Normalized VUS_adapt — the scoring step, fully separate from selection.
 
         Takes the per-anomaly b* chosen by a selection step (e.g.
         compute_per_anomaly_adaptive_slicing) and returns the normalized adaptive
         score plus the non-adaptive (full-buffer) counterparts, so experiments can
         compare ratio_A vs ratio_B vs ratio_full vs raw VUS on the same call.
+
+        Caps: pass either the symmetric ``b_star`` (one buffer per anomaly, applied
+        to both sides) or the per-side pair ``b_star_left`` / ``b_star_right`` (the
+        asymmetric widths from compute_per_anomaly_adaptive_slicing(per_side=True)),
+        never both. The 'full' (non-adaptive) counterparts are unaffected by the
+        choice.
 
         Does NOT select b*. PR-only (metric='vus_pr'); analytical denom only.
 
@@ -1951,8 +2403,12 @@ class VUSNumpy():
         """
         if not self.cumulative:
             raise ValueError("score_adapt requires cumulative=True")
-        adapt = self._normalized_vus(label, score, b_star, denom, K, rng)
-        full  = self._normalized_vus(label, score, None,    denom, K, rng)
+        adapt = self._normalized_vus(
+            label, score, b_star,
+            max_buffer_per_anomaly_left=b_star_left,
+            max_buffer_per_anomaly_right=b_star_right,
+            denom=denom, K=K, rng=rng)
+        full  = self._normalized_vus(label, score, None, denom=denom, K=K, rng=rng)
         return {
             'vus_adapt':     adapt['vus'],
             'ratio_adapt_A': adapt['ratio_A'],
@@ -2062,8 +2518,8 @@ class VUSNumpy():
         """
         ((start_no_edges, end_no_edges), (start_with_edges, end_with_edges)), _ = \
             self.get_anomalies_coordinates(label)
-        pos, _ = self.distance_from_anomaly(label, start_with_edges, end_with_edges, clip=True)
-        labels, _ = self.add_slopes(label, start_no_edges, end_no_edges, pos)
+        (pos_left, pos_right), _ = self.distance_from_anomaly(label, start_with_edges, end_with_edges, clip=True)
+        labels, _ = self.add_slopes(label, start_no_edges, end_no_edges, pos_left, pos_right)
 
         avg_label = labels.mean(axis=0)
 

@@ -170,6 +170,28 @@ def plot_dataset_heatmap(agg, outdir):
     _save(fig, outdir, 'dataset_heatmap')
 
 
+def plot_flip_heatmap(agg, outdir):
+    """Per-dataset top-1 flip rate — the punchy version of the reranking signal."""
+    piv = agg.pivot_table(index='dataset', columns='candidate', values='top1_flip', aggfunc='mean')
+    piv = piv[[c for c in DISPLAY if c in piv.columns]]
+    piv = piv.sort_values(HEADLINE + '_disp', ascending=False)
+    fig, ax = plt.subplots(figsize=(1.4 * piv.shape[1] + 3, 0.5 * piv.shape[0] + 2))
+    im = ax.imshow(piv.values, aspect='auto', cmap='OrRd', vmin=0, vmax=1)
+    ax.set_xticks(range(piv.shape[1]))
+    ax.set_xticklabels([DISPLAY.get(c, c) for c in piv.columns], rotation=30, ha='right', fontsize=8)
+    ax.set_yticks(range(piv.shape[0]))
+    ax.set_yticklabels(piv.index, fontsize=8)
+    for i in range(piv.shape[0]):
+        for j in range(piv.shape[1]):
+            v = piv.values[i, j]
+            if np.isfinite(v):
+                ax.text(j, i, f'{v:.0%}', ha='center', va='center', fontsize=7,
+                        color='white' if v > 0.5 else 'black')
+    fig.colorbar(im, ax=ax, label='top-1 flip rate')
+    ax.set_title('Best-detector flip rate vs VUS, per dataset')
+    _save(fig, outdir, 'flip_rate_heatmap')
+
+
 def plot_detector_rank_shift(df, baseline, avus_disp, outdir):
     # mean rank (1 = best) per detector under each metric, across all series
     df = df.copy()
@@ -190,35 +212,69 @@ def plot_detector_rank_shift(df, baseline, avus_disp, outdir):
     _save(fig, outdir, 'detector_rank_shift')
 
 
-def plot_bump_charts(df, per_series, baseline, avus_disp, outdir, top_n=8):
-    sub = per_series[per_series.candidate == HEADLINE + '_disp'].sort_values('kendall_tau')
-    sub = sub.head(top_n)
+def plot_bump_charts(df, per_series, baseline, avus_disp, outdir, n_panels=6, top_k=10):
+    """Readable bump charts: the most-reranked series from each of the most-reranked
+    datasets (one panel per dataset, diversified), showing only the top_k detectors
+    (union of top_k under VUS and under aVUS), re-ranked within that subset."""
+    sub = per_series[per_series.candidate == HEADLINE + '_disp'].dropna(subset=['kendall_tau'])
     if sub.empty:
         return
-    ncol = 2
-    nrow = int(np.ceil(len(sub) / ncol))
-    fig, axes = plt.subplots(nrow, ncol, figsize=(7 * ncol, 3.2 * nrow))
+    # one representative (most-reranked) series per dataset, then most-reranked datasets
+    picks = sub.loc[sub.groupby('dataset')['kendall_tau'].idxmin()].sort_values('kendall_tau').head(n_panels)
+    ncol = 3
+    nrow = int(np.ceil(len(picks) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5.0 * ncol, 4.6 * nrow))
     axes = np.atleast_1d(axes).ravel()
-    for k, (_, srow) in enumerate(sub.iterrows()):
+    for k, (_, srow) in enumerate(picks.iterrows()):
         ax = axes[k]
         g = df[(df.dataset == srow.dataset) & (df.filename == srow.filename)].copy()
         g = g.dropna(subset=[baseline, avus_disp])
-        g['r_vus'] = g[baseline].rank(ascending=False, method='first')
-        g['r_avus'] = g[avus_disp].rank(ascending=False, method='first')
-        for _, dr in g.iterrows():
+        r_vus_full = g[baseline].rank(ascending=False, method='first')
+        r_avus_full = g[avus_disp].rank(ascending=False, method='first')
+        keep = set(g.loc[r_vus_full <= top_k, 'detector']) | set(g.loc[r_avus_full <= top_k, 'detector'])
+        gg = g[g.detector.isin(keep)].copy()
+        gg['r_vus'] = gg[baseline].rank(ascending=False, method='first')
+        gg['r_avus'] = gg[avus_disp].rank(ascending=False, method='first')
+        for _, dr in gg.iterrows():
             flip = dr['r_vus'] != dr['r_avus']
             ax.plot([0, 1], [dr['r_vus'], dr['r_avus']],
-                    color='crimson' if flip else 'lightgray', lw=1.3, zorder=2 if flip else 1)
-            ax.text(-0.02, dr['r_vus'], dr['detector'], ha='right', va='center', fontsize=6)
-            ax.text(1.02, dr['r_avus'], dr['detector'], ha='left', va='center', fontsize=6)
-        ax.set_xticks([0, 1]); ax.set_xticklabels(['VUS', 'aVUS'], fontsize=8)
-        ax.invert_yaxis(); ax.set_xlim(-0.35, 1.35)
-        ax.set_title(f'{srow.dataset}  τ={srow.kendall_tau:.2f}\n{os.path.basename(str(srow.filename))[:40]}', fontsize=7)
+                    color='crimson' if flip else 'lightgray', lw=1.8 if flip else 1.0,
+                    zorder=3 if flip else 1, alpha=0.95 if flip else 0.6)
+            ax.text(-0.04, dr['r_vus'], dr['detector'], ha='right', va='center', fontsize=7.5)
+            ax.text(1.04, dr['r_avus'], dr['detector'], ha='left', va='center', fontsize=7.5)
+        ax.set_xticks([0, 1]); ax.set_xticklabels(['VUS', 'aVUS'], fontsize=9)
+        ax.invert_yaxis(); ax.set_xlim(-0.75, 1.75)
+        ax.set_title(f'{srow.dataset}   (τ={srow.kendall_tau:.2f})', fontsize=10)
         ax.tick_params(labelleft=False)
-    for k in range(len(sub), len(axes)):
+        for s in ('top', 'right', 'left'):
+            ax.spines[s].set_visible(False)
+    for k in range(len(picks), len(axes)):
         axes[k].axis('off')
-    fig.suptitle('Largest detector-ranking changes (VUS → Adjusted VUS)', fontsize=11)
+    fig.suptitle(f'Detector-ranking changes, VUS → Adjusted VUS (top {top_k} detectors per series)', fontsize=12)
     _save(fig, outdir, 'bump_top_disagreements')
+
+
+def plot_saturation_case(df, baseline, avus_disp, sep, outdir):
+    """The single clearest 'VUS fails, we don't' figure: for one saturated series,
+    per-detector VUS (all ~equal) next to Adjusted VUS (spread out)."""
+    if sep is None or len(sep) == 0:
+        return
+    cand = sep[sep.dataset == 'Stock']
+    top = (cand.iloc[0] if len(cand) else sep.iloc[0])
+    g = df[(df.dataset == top.dataset) & (df.filename == top.filename)].dropna(subset=[baseline, avus_disp]).copy()
+    g = g.sort_values(avus_disp, ascending=False)
+    y = np.arange(len(g))
+    fig, (axv, axa) = plt.subplots(1, 2, figsize=(11, 0.32 * len(g) + 2), sharey=True)
+    axv.barh(y, g[baseline], color='steelblue')
+    axv.set_title(f'VUS  (spread = {top.vus_spread:.3f})', fontsize=10)
+    axa.barh(y, g[avus_disp], color='crimson')
+    axa.set_title(f'Adjusted VUS  (spread = {top.avus_spread:.3f})', fontsize=10)
+    axv.set_yticks(y); axv.set_yticklabels(g['detector'], fontsize=7); axv.invert_yaxis()
+    for ax in (axv, axa):
+        ax.set_xlim(0, 1); ax.set_xlabel('score')
+    fig.suptitle(f'{top.dataset} / {os.path.basename(str(top.filename))}\n'
+                 'VUS rates all detectors near-equal; Adjusted VUS separates them', fontsize=10)
+    _save(fig, outdir, 'saturation_case_stock')
 
 
 def plot_scatter(df, baseline, avus_disp, outdir):
@@ -237,7 +293,8 @@ def main():
     p = argparse.ArgumentParser(description='Stage 2: analyze Adjusted-VUS rankings')
     p.add_argument('--scores', type=str, default=None, help='Path to a scores_*.csv (default: glob all)')
     p.add_argument('--outdir', type=str, default=os.path.join('experiments', 'ranking_adapt'))
-    p.add_argument('--top-n', type=int, default=8, help='Bump charts for the N most-changed series')
+    p.add_argument('--top-n', type=int, default=6, help='Number of bump-chart panels (most-reranked datasets)')
+    p.add_argument('--top-k', type=int, default=10, help='Detectors shown per bump panel')
     args = p.parse_args()
 
     df = load_scores(args.scores)
@@ -293,8 +350,10 @@ def main():
     plot_tau_violin(agg, figdir)
     if df['dataset'].nunique() > 1:
         plot_dataset_heatmap(agg, figdir)
+        plot_flip_heatmap(agg, figdir)
     plot_detector_rank_shift(df, baseline, avus_disp, figdir)
-    plot_bump_charts(df, agg, baseline, avus_disp, figdir, top_n=args.top_n)
+    plot_bump_charts(df, agg, baseline, avus_disp, figdir, n_panels=args.top_n, top_k=args.top_k)
+    plot_saturation_case(df, baseline, avus_disp, sep, figdir)
     plot_scatter(df, baseline, avus_disp, figdir)
 
     print(f"\nTables -> {os.path.abspath(tabdir)}\nFigures -> {os.path.abspath(figdir)}")

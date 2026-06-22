@@ -360,7 +360,7 @@ class VUSTorch():
             return self.get_unique_thresholds(score, max_thresholds=cap)
         elif self.thresholds_mode == 'pr_relevant_fuzzy':
             proxy = safe_mask.float().unsqueeze(0)  # (1, T)
-            return self.get_pr_relevant_thresholds_vus(proxy, score)
+            return self.get_pr_relevant_thresholds_vus(proxy, score, max_thresholds=self.max_thresholds)
 
     @time_it
     def get_anomalies_coordinates(self, label: torch.Tensor):
