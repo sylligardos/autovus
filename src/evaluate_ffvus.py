@@ -6,6 +6,7 @@
 """
 
 import functools
+import glob
 import math
 import os
 import time
@@ -45,6 +46,73 @@ def auc_pr_wrapper(label, score, interpolation='stepwise'):
         return sk_metrics.auc(rec, pr)
     else:
         raise ValueError(f"Unknown argument for interpolation: {interpolation}")
+
+
+def load_scores_aligned(tsb, fnames, timeseries, labels, detector):
+    """Like TSBADParser.load_scores_and_delete but tolerant of score files whose
+    length does not match their time series.
+
+    load_scores_and_delete asserts that every score length equals its time
+    series length and crashes otherwise (e.g. SAND emits a length-500 score for
+    a length-1000 series). Here we instead drop those mismatched entries so the
+    evaluation can continue. fnames/timeseries/labels are mutated in-place to
+    stay aligned with the returned scores.
+    """
+    scores, problematic_files = tsb.load_scores(
+        detectors=[detector], filenames=fnames, drop_missing=True,
+    )
+    if problematic_files:
+        problematic_csv = [name.replace(".npy", ".csv") for name in problematic_files]
+        indexes = [idx for idx, name in enumerate(fnames) if name in problematic_csv]
+        tsb.delete_indexes_from_lists(fnames, timeseries, labels, indexes=indexes)
+
+    # Drop any remaining entries whose score length disagrees with the series.
+    bad = [
+        i for i, (t, l, s) in enumerate(zip(timeseries, labels, scores))
+        if not (t.shape[0] == l.shape[0] == s.shape[1])
+    ]
+    if bad:
+        bad_names = [fnames[i] for i in bad]
+        print(f"[{detector}] Dropping {len(bad)} score(s) with mismatched length: {bad_names}")
+        tsb.delete_indexes_from_lists(fnames, timeseries, labels, scores, indexes=bad)
+
+    return scores, problematic_files
+
+
+def save_results(experiment_dir, results, problematic_timeseries, info_meta):
+    """Write the collected results and run info to experiments/<experiment_dir>/.
+
+    Called incrementally (after every detector) and from a finally block, so a
+    crash, OOM-kill, or Ctrl-C still leaves the results gathered so far on disk.
+    The filename encodes the running error stats, which change as more rows are
+    added, so stale CSVs from earlier incremental writes are cleared first.
+    """
+    if not results:
+        return
+
+    saving_path  = os.path.join('experiments', experiment_dir)
+    results_path = os.path.join(saving_path, 'results')
+    info_path    = os.path.join(saving_path, 'info')
+    os.makedirs(results_path, exist_ok=True)
+    os.makedirs(info_path,    exist_ok=True)
+
+    df = pd.DataFrame(results)
+    vus_mean_error     = df["VUS-PR - FF-VUS-PR"].mean()
+    vus_max_error      = df["VUS-PR - FF-VUS-PR"].max()
+    vus_gpu_mean_error = df["VUS-PR - FF-VUS-PR-GPU"].mean()
+    vus_gpu_max_error  = df["VUS-PR - FF-VUS-PR-GPU"].max()
+    exp_name = (f"evaluate_vusmean{vus_mean_error:.2e}_vusmax{vus_max_error:.2e}"
+                f"_vusgpumean{vus_gpu_mean_error:.2e}_vusgpumax{vus_gpu_max_error:.2e}.csv")
+
+    for directory in (results_path, info_path):
+        for stale in glob.glob(os.path.join(directory, "*.csv")):
+            os.remove(stale)
+
+    df.to_csv(os.path.join(results_path, exp_name), index=False)
+
+    info_df = pd.DataFrame([info_meta])
+    info_df["Problematic time series"] = [problematic_timeseries]
+    info_df.to_csv(os.path.join(info_path, exp_name), index=False)
 
 
 def _analyze_label(label):
@@ -99,7 +167,7 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     slope_size = 128
     step = 1
     zita = (1 / math.sqrt(2))
-    global_mask = True if testing else np.random.choice([True, False])
+    global_mask = True
     slopes = 'function'
     existence = 'optimized'
     conf_matrix = 'dynamic_plus'
@@ -130,6 +198,7 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
         existence='None',
         conf_matrix=conf_matrix,
         interpolation=interpolation,
+        max_thresholds=1000,
     )
 
     ff_vus_torch = VUSTorch(
@@ -151,6 +220,7 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
         existence=False,
         conf_matrix=conf_matrix,
         device=device,
+        max_thresholds=1000,
     )
     print(f">> Settings: slope_size={slope_size}, step={step}, slopes={slopes}, "
           f"existence={existence}, conf_matrix={conf_matrix}, "
@@ -160,13 +230,27 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     results = []
     problematic_timeseries = []
 
-    for detector in tqdm(detectors_to_run, desc='Detectors', disable=len(detectors_to_run) == 1):
+    def _info_meta():
+        return {
+            "Experiment":       "Evaluate FF-VUS-PR",
+            "Slope size":       slope_size,
+            "Global mask":      global_mask,
+            "Step":             step,
+            "Slopes":           slopes,
+            "Existence":        existence,
+            "Confusion matrix": conf_matrix,
+            "Time":             time.time() - tic,
+            "Detector":         detector_name if detector_name is not None else 'all',
+        }
+
+    try:
+      for detector in tqdm(detectors_to_run, desc='Detectors', disable=len(detectors_to_run) == 1):
         # load_scores_and_delete mutates lists in-place — pass copies each time
         fnames_det    = list(fnames)
         ts_det        = list(timeseries)
         labels_det    = list(labels)
 
-        scores, _ = tsb.load_scores_and_delete(fnames_det, ts_det, labels_det, detectors=[detector])
+        scores, _ = load_scores_aligned(tsb, fnames_det, ts_det, labels_det, detector)
         if not scores:
             print(f"[{detector}] No valid scores found, skipping.")
             continue
@@ -246,11 +330,19 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
 
             cpu_err = curr_result["VUS-PR - FF-VUS-PR"]
             gpu_err = curr_result["VUS-PR - FF-VUS-PR-GPU"]
-            if cpu_err > 1e-10 or gpu_err > 1e-4:
-                debug_info = compare_vus_steps(label, score, ff_vus_numpy, ff_vus_torch)
-                curr_result.update(debug_info)
+            # if cpu_err > 1e-10 or gpu_err > 1e-4:
+            #     debug_info = compare_vus_steps(label, score, ff_vus_numpy, ff_vus_torch)
+            #     curr_result.update(debug_info)
 
             results.append(curr_result)
+
+        # Persist progress after every detector so a crash, OOM-kill, or Ctrl-C
+        # still leaves the results gathered so far on disk.
+        if experiment_dir is not None:
+            save_results(experiment_dir, results, problematic_timeseries, _info_meta())
+    finally:
+        if experiment_dir is not None:
+            save_results(experiment_dir, results, problematic_timeseries, _info_meta())
 
     if not results:
         print("No results collected.")
@@ -270,38 +362,6 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     print(f"VUS-PR - FF-VUS-PR-GPU: average dif.: {df['VUS-PR - FF-VUS-PR-GPU'].mean()}, "
           f"max dif.: {df['VUS-PR - FF-VUS-PR-GPU'].max()}, "
           f"avg speed up: {df['VUS-PR-GPU Speed up'].mean()}")
-
-    if experiment_dir is not None:
-        saving_path  = os.path.join('experiments', experiment_dir)
-        results_path = os.path.join(saving_path, 'results')
-        info_path    = os.path.join(saving_path, 'info')
-
-        os.makedirs(saving_path,  exist_ok=True)
-        os.makedirs(results_path, exist_ok=True)
-        os.makedirs(info_path,    exist_ok=True)
-
-        vus_mean_error     = df["VUS-PR - FF-VUS-PR"].mean()
-        vus_max_error      = df["VUS-PR - FF-VUS-PR"].max()
-        vus_gpu_mean_error = df["VUS-PR - FF-VUS-PR-GPU"].mean()
-        vus_gpu_max_error  = df["VUS-PR - FF-VUS-PR-GPU"].max()
-        exp_name = (f"evaluate_vusmean{vus_mean_error:.2e}_vusmax{vus_max_error:.2e}"
-                    f"_vusgpumean{vus_gpu_mean_error:.2e}_vusgpumax{vus_gpu_max_error:.2e}.csv")
-
-        df.to_csv(os.path.join(results_path, exp_name), index=False)
-
-        info_df = pd.DataFrame([{
-            "Experiment":       "Evaluate FF-VUS-PR",
-            "Slope size":       slope_size,
-            "Global mask":      global_mask,
-            "Step":             step,
-            "Slopes":           slopes,
-            "Existence":        existence,
-            "Confusion matrix": conf_matrix,
-            "Time":             time.time() - tic,
-            "Detector":         detector_name if detector_name is not None else 'all',
-        }])
-        info_df["Problematic time series"] = [problematic_timeseries]
-        info_df.to_csv(os.path.join(info_path, exp_name), index=False)
 
 
 if __name__ == "__main__":

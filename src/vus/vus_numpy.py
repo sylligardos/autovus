@@ -434,11 +434,17 @@ class VUSNumpy():
             else:
                 self.pos_slopes, self.neg_slopes = np.array([]), np.array([])
 
-    def _dispatch_thresholds(self, label, score, label_slopes):
+    def _dispatch_thresholds(self, label, score, label_slopes, score_full=None):
+        # Thresholds must range over the FULL (unmasked) score so that global_mask
+        # stays a pure optimization and does not change the threshold set. The
+        # legacy VUS and VUSTorch both select thresholds from the full score.
+        # score_full carries it for the score-only modes; the pr_relevant modes
+        # stay coupled to the masked (label-aligned) score.
+        score_unmasked = score if score_full is None else score_full
         if self.thresholds_mode == 'all_unique':
-            return self.get_unique_thresholds(score, max_thresholds=None)
+            return self.get_unique_thresholds(score_unmasked, max_thresholds=None)
         elif self.thresholds_mode == 'subsampled':
-            return self.get_unique_thresholds(score, max_thresholds=self.max_thresholds)
+            return self.get_unique_thresholds(score_unmasked, max_thresholds=self.max_thresholds)
         elif self.thresholds_mode == 'pr_relevant':
             return self.get_pr_relevant_thresholds(label, score)
         elif self.thresholds_mode == 'pr_relevant_fuzzy':
@@ -470,6 +476,8 @@ class VUSNumpy():
         """
         T = len(label)
 
+        score_full = score  # full, unmasked score for threshold selection
+
         ((start_no_edges, end_no_edges), (start_with_edges, end_with_edges)), time_anom_coord = self.get_anomalies_coordinates(label)
         safe_mask, time_safe_mask = self.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=self.global_mask)
 
@@ -493,7 +501,7 @@ class VUSNumpy():
             cap_left=cap_left, cap_right=cap_right)
 
         if thresholds is None:
-            thresholds, time_thresholds = self._dispatch_thresholds(label, score, labels)
+            thresholds, time_thresholds = self._dispatch_thresholds(label, score, labels, score_full=score_full)
         else:
             thresholds = np.array(thresholds) if isinstance(thresholds, list) else thresholds
             if not isinstance(thresholds, np.ndarray):
