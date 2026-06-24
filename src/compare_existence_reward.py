@@ -19,7 +19,7 @@ from vus.vus_numpy import VUSNumpy
 
 def compare_existence(vus, labels, sm, score, thresholds, start_points, end_points,
                       n_runs=10, atol=1e-8, rtol=1e-5, vus_gpu=None,
-                      save_path='experiments/existence_comparison_results.csv'):
+                      save_path='experiments/existence_comparison/existence_comparison_results.csv'):
     implementations = {
         'trivial': lambda: vus.existence_trivial(labels, sm, thresholds, start_points, end_points),
         'optimized': lambda: vus.existence_optimized(labels, score, thresholds, start_points, end_points),

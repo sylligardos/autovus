@@ -3,7 +3,7 @@ Stage 1 of the Adjusted-VUS ranking study: compute & save the raw scores.
 
 For every (dataset, time series, detector) it runs the two-step adaptive pipeline
   1. selection  -> per-side per-anomaly b* (b*_left, b*_right) via
-                   compute_per_anomaly_adaptive_slicing(per_side=True), plus the
+                   compute_per_anomaly_buffer(per_side=True), plus the
                    detection taxonomy (early/late/exact/missed) per anomaly
   2. scoring    -> score_adapt with the asymmetric per-side caps (raw VUS, ratio_*,
                    Adjusted VUS skill_*)
@@ -131,12 +131,12 @@ def compute_ranking(dataset, slope_size, testing, experiment_dir, with_community
                 continue
 
             # Clean floating-point dust ONCE so selection and scoring share the
-            # identical score (compute_per_anomaly_adaptive_slicing would otherwise
+            # identical score (compute_per_anomaly_buffer would otherwise
             # clean internally but score_adapt would not, desyncing the two steps).
             score = VUSNumpy.floor_dust(score)
 
             t0 = perf_counter()
-            sel = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=True, dust_floor=0)
+            sel = vus.compute_per_anomaly_buffer(label, score, per_side=True, dust_floor=0)
             selection_time = perf_counter() - t0
 
             b_left  = np.array([r['best_left']['buffer_val']  for r in sel])

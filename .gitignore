@@ -10,6 +10,7 @@ run_interactive.sh
 experiments/*
 scripts/*/*.sh
 *.keras
+.cleps_jobs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

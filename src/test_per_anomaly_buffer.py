@@ -6,7 +6,7 @@ Two modes:
   python src/test_per_anomaly_buffer.py --real    # real TSB-AD analysis
 
 Real-data mode loads the most "interesting" series (those with the most
-varied anomaly lengths), runs compute_per_anomaly_adaptive_slicing for every detector,
+varied anomaly lengths), runs compute_per_anomaly_buffer for every detector,
 and saves one PNG per (series, detector) to experiments/per_anomaly_buffer/.
 """
 
@@ -198,7 +198,7 @@ def test_single_anomaly_matches_global():
     score = offset_score(label, offset=5)
 
     (global_result, _), _ = vus.compute(label, score, adaptive=True)
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
+    per_anom = vus.compute_per_anomaly_buffer(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     lag = 5
     assert len(per_anom) == 1, f"Expected 1 result, got {len(per_anom)}"
@@ -221,7 +221,7 @@ def test_window_bounds_slicing():
     label = make_label(anomalies)
     score = offset_score(label, offset=0)
 
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
+    per_anom = vus.compute_per_anomaly_buffer(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     assert per_anom[0]['window'] == (0, 205),   f"Got {per_anom[0]['window']}"
     assert per_anom[1]['window'] == (205, 460), f"Got {per_anom[1]['window']}"
@@ -239,7 +239,7 @@ def test_no_anomalies():
     print("\n=== Test 3: no anomalies returns [] ===")
     label = np.zeros(T)
     score = np.random.default_rng(0).uniform(0, 1, T)
-    result = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=_PER_SIDE)
+    result = vus.compute_per_anomaly_buffer(label, score, per_side=_PER_SIDE)
     assert result == [], f"Expected [], got {result}"
     print("  PASS")
 
@@ -250,7 +250,7 @@ def test_requires_cumulative():
     label = make_label([(200, 210)])
     score = offset_score(label, offset=0)
     try:
-        vus_nc.compute_per_anomaly_adaptive_slicing(label, score)
+        vus_nc.compute_per_anomaly_buffer(label, score)
         assert False, "Should have raised"
     except ValueError as e:
         print(f"  Caught: {e}")
@@ -265,7 +265,7 @@ def test_length_vs_buffer():
     label = make_label(anomalies)
     score = offset_score(label, offset=lag)
 
-    per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=_PER_SIDE)
+    per_anom = vus.compute_per_anomaly_buffer(label, score, plot=_PLOT, per_side=_PER_SIDE)
 
     expectations = [
         (lag, f"b*≈{lag} (point anomaly, late detection within L is included — lag={lag})"),
@@ -303,7 +303,7 @@ def _run_score_test(score_fn, label_configs, check_fn, test_name, per_side=None)
     for cfg in label_configs:
         label    = make_label(cfg['anomalies'])
         score    = score_fn(label)
-        per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, plot=_PLOT, per_side=per_side)
+        per_anom = vus.compute_per_anomaly_buffer(label, score, plot=_PLOT, per_side=per_side)
         if len(per_anom) != len(cfg['anomalies']):
             msg = f"[{cfg['tag']}] Expected {len(cfg['anomalies'])} result(s), got {len(per_anom)}"
             print(f"  FAIL  {msg}")
@@ -419,7 +419,7 @@ def test_detection_taxonomy():
         for cfg in LABEL_CONFIGS:
             label    = make_label(cfg['anomalies'])
             score    = score_fn(label)
-            per_anom = vus.compute_per_anomaly_adaptive_slicing(label, score, per_side=True)
+            per_anom = vus.compute_per_anomaly_buffer(label, score, per_side=True)
             for k, r in enumerate(per_anom):
                 got = r['detection_type']
                 ok  = (got == expected)
@@ -429,7 +429,7 @@ def test_detection_taxonomy():
                     failures.append(f"{score_fn.__name__} [{cfg['tag']}] anomaly {k}: got {got}, expected {expected}")
     # Symmetric mode collapses early/late into 'lagged'.
     label = make_label([(400, 419)])
-    r_sym = vus.compute_per_anomaly_adaptive_slicing(label, score_C2_late(label), per_side=False)[0]
+    r_sym = vus.compute_per_anomaly_buffer(label, score_C2_late(label), per_side=False)[0]
     if r_sym['detection_type'] != 'lagged':
         failures.append(f"symmetric late: got {r_sym['detection_type']}, expected lagged")
     print(f"  symmetric late -> {r_sym['detection_type']} "
@@ -671,7 +671,7 @@ def run_real_data(args):
         for det_idx, det in enumerate(detectors):
             score = sc[det_idx]
             try:
-                per_anom = vus_real.compute_per_anomaly_adaptive_slicing(lbl, score, per_side=args.per_side)
+                per_anom = vus_real.compute_per_anomaly_buffer(lbl, score, per_side=args.per_side)
             except Exception as ex:
                 print(f"    [{det}] ERROR: {ex}")
                 continue

@@ -74,9 +74,11 @@ Let the label have anomalies `k = 1,…,K`. For each anomaly `k`:
 
 Intuition: `r_k(b)` is how many times better than chance the detector is when we
 allow tolerance `b`; its argmax is the buffer that best captures this anomaly’s
-detection. *(code: `compute_per_anomaly_adaptive_slicing` → `find_adaptive_buffer`
-→ `select_best_buffer`; the marginal ratio is built at the line
-`sel_ratio = marg_vus / marg_denom`.)*
+detection. *(code: `compute_per_anomaly_buffer` → `_select_window` →
+`_select_adaptive_buffer`; the marginal ratio is built at the line
+`ratio = marg_vus / np.clip(marg_den, 1e-10, None)`, de-cumulated once from the
+cumulative VUS curve, and `b*` is a plain `argmax(ratio)` with two no-signal
+guards.)*
 
 **Selection and scoring are deliberately separate steps.** Step 1 only outputs the
 vector `b* = (b*_1,…,b*_K)`. It does not produce the final score.
@@ -532,13 +534,23 @@ All in `src/vus/vus_numpy.py` (class `VUSNumpy`):
 
 | concept                                   | location                                  |
 |-------------------------------------------|-------------------------------------------|
-| per-buffer VUS sweep `C(b)` (`cumulative=True`) | `compute(...)`, aggregation in `auc` (line ~1786) |
-| de-cumulate `C(b) → A(b)`                 | `decumulate` (line ~1821)                 |
-| random baseline `g(b)` (analytical)       | `_compute_denom_curve` (line ~538)        |
-| **Step 1**: per-anomaly `b*` selection    | `compute_per_anomaly_adaptive_slicing` (line ~735) → `find_adaptive_buffer` (line ~583) → `select_best_buffer` (line ~215) |
-| marginal skill ratio `r_k(b)`             | `find_adaptive_buffer`, `sel_ratio = marg_vus / marg_denom` (line ~641) |
-| build adapted (capped) label              | `_build_capped_labels` (line ~1855)       |
-| **Step 2**: final single score            | `score_adapt` (line ~1928) → `_normalized_vus` (line ~1885) |
+| per-buffer VUS sweep `C(b)` (`cumulative=True`) | `compute(...)` (line ~454), aggregation in `auc` (line ~2041) |
+| de-cumulate `C(b) → A(b)`                 | `decumulate` (line ~2076)                 |
+| random baseline `g(b)` (analytical)       | `_compute_denom_curve` (line ~560)        |
+| **Step 1**: per-anomaly `b*` selection    | `compute_per_anomaly_buffer` (line ~767) → `_select_window` (line ~642) → `_select_adaptive_buffer` (line ~605) |
+| marginal skill ratio `r_k(b)`             | `_select_adaptive_buffer`, `ratio = marg_vus / np.clip(marg_den, 1e-10, None)` (line ~627) |
+| build adapted (capped) label              | `_build_capped_labels` (line ~2110)       |
+| **Step 2**: final single score            | `score_adapt` (line ~2200) → `_normalized_vus` (line ~2147) |
+
+**Note on the selection rule (changed 2026-06-24).** Step 1 is now a plain
+`argmax` of the marginal skill ratio with only two no-signal guards
+(detector never beats chance → `b*=0`; window has no real signal → `b*=0`).
+The earlier rule system (penalized objective, distance penalty `tau`, detection
+gate, plateau/elbow/first-peak heuristics) and the double de-cumulation have been
+removed; the marginal ratio is now de-cumulated **once**. The old code is kept
+for reference only in `src/archive/per_anomaly_buffer_legacy.py`.
+`select_best_buffer` still exists in `vus_numpy.py` but is no longer on this path
+(only `precompute_demo.py` uses it).
 
 Scope reminder: only Sections 2 and 3 (Steps 1 and 2) are in scope. The rest of
 the file is the underlying VUS machinery, which you can treat as a black box that

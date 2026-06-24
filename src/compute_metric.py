@@ -13,6 +13,7 @@ import time
 
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import pandas as pd
 import torch
 from tqdm import tqdm
@@ -245,29 +246,47 @@ def compute_metric_over_dataset(
             if not df.empty:
                 print(df)
                 print(f"Average computation time: {df['Metric time'].mean():.3f} seconds")
-                # if metric in ('ff_vus', 'ff_vus_gpu'):
-                #     time_cols = [c for c in df.columns if c.endswith(' time') and c != 'Metric time']
-                #     if time_cols:
-                #         avg_times = df[time_cols].mean()
-                #         print("\nFF-VUS time analysis (averages):")
-                #         for col, val in avg_times.items():
-                #             print(f"  {col}: {val:.6f} s")
+                if metric in ('ff_vus', 'ff_vus_gpu'):
+                    time_cols = [c for c in df.columns if c.endswith(' time') and c != 'Metric time']
+                    if time_cols:
+                        avg_times = df[time_cols].mean()
+                        print("\nFF-VUS time analysis (averages):")
+                        for col, val in avg_times.items():
+                            print(f"  {col}: {val:.6f} s")
 
-                #         labels = [c.replace(' time', '') for c in time_cols]
-                #         data   = [df[c].dropna().values for c in time_cols]
-                #         order  = sorted(range(len(data)), key=lambda i: -data[i].mean())
-                #         fig, ax = plt.subplots(figsize=(10, 5))
-                #         ax.boxplot(
-                #             [data[i] for i in order],
-                #             tick_labels=[labels[i] for i in order],
-                #             vert=True,
-                #             patch_artist=True,
-                #         )
-                #         ax.set_ylabel("Time (s)")
-                #         ax.set_title(f"FF-VUS runtime breakdown — {metric} / slope={slope_size}")
-                #         plt.xticks(rotation=30, ha='right')
-                #         plt.tight_layout()
-                #         plt.show()
+                        labels = [c.replace(' time', '') for c in time_cols]
+                        raw    = [df[c].dropna().values for c in time_cols]
+                        order  = sorted(range(len(raw)), key=lambda i: -raw[i].mean())
+
+                        plot_data = []
+                        for i in order:
+                            vals = raw[i]
+                            q1, q3 = np.percentile(vals, [25, 75])
+                            iqr = q3 - q1
+                            mask = (vals >= q1 - 1.5 * iqr) & (vals <= q3 + 1.5 * iqr)
+                            for v in vals[mask]:
+                                plot_data.append({"component": labels[i], "time": v})
+                        plot_df = pd.DataFrame(plot_data)
+                        ordered_labels = [labels[i] for i in order]
+
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        sns.boxplot(
+                            data=plot_df,
+                            x="component",
+                            y="time",
+                            order=ordered_labels,
+                            showfliers=True,
+                            ax=ax,
+                            showmeans=True,
+                        )
+                        ax.set_xlabel("")
+                        ax.set_ylabel("Time (s)")
+                        ax.set_title(f"FF-VUS runtime breakdown — {metric} / slope={slope_size}")
+                        ax.set_yscale('log')
+                        ax.grid(axis='y', linestyle='--', alpha=0.5)
+                        plt.xticks(rotation=30, ha='right')
+                        plt.tight_layout()
+                        plt.show()
 
             if experiment_dir is not None:
                 info_df = pd.DataFrame([{

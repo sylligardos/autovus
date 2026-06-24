@@ -13,14 +13,34 @@ import psutil
 
 
     
+import os
 import time
 import functools
+
+# CUDA kernel launches are asynchronous: without a synchronize the per-function
+# timers only capture the launch cost, and the real GPU work gets charged to
+# whichever later op first blocks on the queue (e.g. existence cost showing up
+# as confusion-matrix time). Syncing fixes the attribution but serializes the
+# pipeline and slows the metric, so it must NOT be on by default. Opt in for
+# profiling with FFVUS_PROFILE=1; normal runs keep the fast async path.
+PROFILE_SYNC = os.environ.get('FFVUS_PROFILE', '0') == '1'
+
 def time_it(func):
-    """Wrapper to measure execution time of a function."""
+    """Wrapper to measure execution time of a function.
+
+    When FFVUS_PROFILE=1 and CUDA is available, the device is synchronized
+    around each call so per-function times are attributed accurately. Off by
+    default to avoid slowing the metric.
+    """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        sync = PROFILE_SYNC and torch.cuda.is_available()
+        if sync:
+            torch.cuda.synchronize()
         start_time = time.time()
         result = func(*args, **kwargs)
+        if sync:
+            torch.cuda.synchronize()
         elapsed_time = time.time() - start_time
         return result, elapsed_time
     return wrapper
@@ -38,7 +58,7 @@ class VUSTorch():
             cumulative=False,
             aggregation='mean',
             thresholds='pr_relevant_fuzzy',
-            max_thresholds=None,
+            max_thresholds=2000,
         ):
         """
         Initialize the torch version of the VUS metric.
@@ -156,8 +176,10 @@ class VUSTorch():
             # threshold count instead.
             n_thresholds = thresholds.shape[0]
             chunk_len = max(1, int(self.max_memory_tokens // max(1, n_thresholds)))
+            n_extra_chunks = (nonmask_score.shape[0] + chunk_len - 1) // chunk_len
             for start in tqdm(range(0, nonmask_score.shape[0], chunk_len),
-                              desc='Computing extra FPs', leave=False):
+                              desc='Computing extra FPs', leave=False,
+                              disable=(n_extra_chunks <= 10)):
                 chunk = nonmask_score[start:start + chunk_len]
                 sm, extra_time_sm = self.get_score_mask(chunk, thresholds)
                 extra_fp += sm.sum(axis=1)
@@ -195,21 +217,26 @@ class VUSTorch():
 
             # Main computation
             labels_c, chunk_time_slope = self.add_slopes(label_c, pos)
-            (anomalies_found_c, total_anomalies_c), chunk_time_existence = self.compute_existence(labels_c, sm, safe_mask_c, normalize=False)
             (fp_c, fn_c, tp_c, positives_c, neg_c, fpr_c), chunk_time_conf = self.compute_confusion_matrix(labels_c, sm)
 
             # Accumulate results and timing from each chunk
             tp += tp_c
             fp += fp_c
             positives += positives_c
-            anomalies_found += anomalies_found_c
-            total_anomalies += total_anomalies_c
             time_anomalies_coord += chunk_time_anomalies_coord
             time_pos += chunk_time_pos
             time_sm += chunk_time_sm
             time_slopes += chunk_time_slope
-            time_existence += chunk_time_existence
             time_confusion += chunk_time_conf
+
+            # Existence is optional and its result is only used below when enabled
+            # (see the existence/ones branch). Skip the call entirely when off to
+            # avoid a pointless kernel launch + sync per chunk.
+            if self.existence:
+                (anomalies_found_c, total_anomalies_c), chunk_time_existence = self.compute_existence_segmax(labels_c, score_c, thresholds, safe_mask_c, normalize=False)
+                anomalies_found += anomalies_found_c
+                total_anomalies += total_anomalies_c
+                time_existence += chunk_time_existence
 
             prev_split = curr_split
 
@@ -260,6 +287,12 @@ class VUSTorch():
         Finds approximately evenly spaced safe split points where pos is a local maximum
         and far enough from anomalies.
         """
+        # Single-chunk is the common case: the full series fits in memory. Return
+        # the trivial split directly, skipping the .item() GPU sync and the O(T)
+        # nonzero/argmin below (which would produce exactly [length] anyway).
+        if n_splits <= 1:
+            return torch.tensor([label.shape[0]], device=self.device)
+
         length = torch.tensor(label.shape[0], device=self.device)
         valid_splits_mask = ~safe_mask
 
@@ -369,6 +402,53 @@ class VUSTorch():
 
         return torch.tensor(thresholds, dtype=score.dtype, device=self.device)
 
+    @time_it
+    def get_pr_relevant_thresholds_vus_torch(self, label_slopes, score, min_area=1e-8,
+                                             max_thresholds=1000):
+        """
+        On-device torch port of get_pr_relevant_thresholds_vus.
+
+        Same rule (keep thresholds where the cumulative fuzzy-TP changes, then
+        TP-space uniform subsampling when over max_thresholds), but everything
+        runs on the GPU with no host round-trip or CPU numpy sort. Tie handling
+        is order-independent: the cumulative TP at the LAST occurrence of a tied
+        score equals the sum of all fuzzy TP with score >= that level regardless
+        of how ties are ordered, so argsort tie-breaking does not matter.
+        """
+        fuzzy_label = label_slopes.max(dim=0).values            # (T,)
+
+        order = torch.argsort(score, descending=True)
+        score_sorted = score[order]
+        fuzzy_sorted = fuzzy_label[order]
+
+        # LAST occurrence of each tied score.
+        if score_sorted.numel() > 0:
+            distinct = torch.cat([
+                score_sorted[:-1] != score_sorted[1:],
+                torch.ones(1, dtype=torch.bool, device=score.device),
+            ])
+        else:
+            distinct = torch.zeros(0, dtype=torch.bool, device=score.device)
+        score_unique = score_sorted[distinct]
+
+        # Cumulative fuzzy-TP; keep thresholds where it changes.
+        tp = torch.cumsum(fuzzy_sorted, dim=0)[distinct]
+        keep = torch.diff(tp, prepend=torch.zeros(1, dtype=tp.dtype, device=tp.device)) > 0
+        thresholds = score_unique[keep]
+
+        # TP-space uniform sampling cap.
+        if max_thresholds is not None and thresholds.numel() > max_thresholds:
+            tp_kept = tp[keep]
+            total_tp = tp_kept[-1]
+            targets = torch.linspace(0.0, float(total_tp), max_thresholds + 1,
+                                     device=tp.device, dtype=tp_kept.dtype)[1:]
+            idx = torch.searchsorted(tp_kept, targets, side='left')
+            idx = torch.clamp(idx, 0, tp_kept.numel() - 1)
+            idx = torch.unique(idx)
+            thresholds = thresholds[idx]
+
+        return thresholds.to(dtype=score.dtype)
+
     def _dispatch_thresholds(self, _label, score, safe_mask):
         if self.thresholds_mode == 'all_unique':
             return self.get_unique_thresholds(score, max_thresholds=None)
@@ -377,7 +457,7 @@ class VUSTorch():
             return self.get_unique_thresholds(score, max_thresholds=cap)
         elif self.thresholds_mode == 'pr_relevant_fuzzy':
             proxy = safe_mask.float().unsqueeze(0)  # (1, T)
-            return self.get_pr_relevant_thresholds_vus(proxy, score, max_thresholds=self.max_thresholds)
+            return self.get_pr_relevant_thresholds_vus_torch(proxy, score, max_thresholds=self.max_thresholds)
 
     @time_it
     def get_anomalies_coordinates(self, label: torch.Tensor):
@@ -611,6 +691,72 @@ class VUSTorch():
             not_found = torch.sum(cm_diff_norm, dim=2) + final_missed
             found_parts.append(total_anomalies - not_found)
         n_anomalies_found = torch.cat(found_parts, dim=1)             # (s, t)
+
+        if normalize:
+            return n_anomalies_found / total_anomalies
+        else:
+            return n_anomalies_found, total_anomalies
+
+    @time_it
+    def compute_existence_segmax(self, labels: torch.Tensor, score: torch.Tensor, thresholds: torch.Tensor, safe_mask: torch.Tensor = None, normalize: bool = True) -> torch.Tensor:
+        """
+        Segment-max reformulation of compute_existence.
+
+        Identical semantics: an anomaly region k (under slope s) is "found" at
+        threshold t iff some point in it is detected, i.e. iff the max score in
+        region k clears the threshold. So instead of materialising the
+        (s, t, T) score_hat and running a cummax scan over the time axis, reduce
+        the score to a per-region max ONCE (threshold-independent) and compare
+        that against the thresholds. Uses the same labels_stairs grouping as
+        compute_existence, so the merge behaviour is preserved exactly.
+
+        Note the different signature: this needs the raw score and thresholds
+        (not the precomputed score_mask), because the per-region reduction is on
+        score magnitudes, not on the boolean mask.
+
+        Args:
+            labels:     (s, T) per-slope soft labels (same as compute_existence).
+            score:      (T,) raw anomaly scores.
+            thresholds: (t,) threshold levels.
+        """
+        if not self.existence:
+            return 1 if normalize else (1, 1)
+        device = labels.device
+
+        if safe_mask is not None and not self.global_mask:
+            labels = labels[:, safe_mask]
+            score = score[safe_mask]
+
+        if labels.shape[1] < 1:
+            return 0 if normalize else (0, 0)
+
+        s, T = labels.shape
+        t = thresholds.shape[0]
+
+        norm_labels = (labels > 0).int()
+        diff = torch.diff(norm_labels, dim=1, prepend=torch.zeros((norm_labels.size(0), 1), device=device))
+        diff = torch.clamp(diff, min=0, max=1)
+        stairs = torch.cumsum(diff, dim=1)
+        labels_stairs = norm_labels * stairs              # (s, T), 0 = non-anomaly
+        total_anomalies = stairs[:, -1][:, None]          # (s, 1)
+
+        K = int(labels_stairs.max().item())               # max region index across slopes
+        if K == 0:
+            n_anomalies_found = torch.zeros((s, t), device=device)
+            return (n_anomalies_found / total_anomalies) if normalize else (n_anomalies_found, total_anomalies)
+
+        # Per-region max score: scatter-amax of score into bins indexed by the
+        # region id, per slope row. (s, T) -> (s, K+1). Bin 0 = non-anomaly,
+        # dropped afterwards. Empty bins stay -inf so they never clear a
+        # threshold (and don't inflate the found count).
+        seg_max = torch.full((s, K + 1), float('-inf'), device=device)
+        seg_max.scatter_reduce_(1, labels_stairs.long(), score[None, :].expand(s, T),
+                                reduce='amax', include_self=True)
+        seg_max = seg_max[:, 1:]                           # (s, K)
+
+        # n_found[s, t] = number of regions whose max clears threshold t.
+        # (s, K, t) is cheap because K (number of anomalies) is tiny.
+        n_anomalies_found = (seg_max[:, :, None] >= thresholds[None, None, :]).sum(dim=1).to(torch.float32)
 
         if normalize:
             return n_anomalies_found / total_anomalies

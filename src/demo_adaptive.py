@@ -163,7 +163,7 @@ def compute_per_anomaly_bstar(fname, detector):
     if score is None:
         return None
     vus = VUSNumpy(slope_size=256, step=1, cumulative=True, global_mask=False)
-    res = vus.compute_per_anomaly_adaptive_slicing(np.asarray(label), score, per_side=True)
+    res = vus.compute_per_anomaly_buffer(np.asarray(label), score, per_side=True)
     return [{'start': int(r['start']), 'end': int(r['end']),
              'b_left':  int(r['best_left']['buffer_val']),
              'b_right': int(r['best_right']['buffer_val']),
