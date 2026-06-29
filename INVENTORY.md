@@ -92,7 +92,7 @@ ff-vus/
 │   ├── compute_ranking_adapt.py     # Stage 1: per-pair aVUS selection + scoring → CSV
 │   ├── analyze_ranking_adapt.py     # Stage 2: τ/Spearman vs VUS, flip rate, tables/figures
 │   ├── compare_threshold_cap.py     # Threshold-cap experiment (pr_relevant_fuzzy vs subsampled)
-│   ├── evaluate_ffvus.py     # Equivalence eval (VUS vs sklearn, CPU vs GPU)
+│   ├── evaluate_vus.py     # Equivalence eval (VUS vs sklearn, CPU vs GPU)
 │   ├── compute_metric.py     # Bulk metric computation over a dataset
 │   ├── vus_visualizer.py     # Paper figure generation (--plot <name>)
 │   ├── precompute_existence.py / precompute_rankings.py
@@ -152,7 +152,7 @@ detection extent while the cumulative ratio overshoots ~2x (NAB Facility series)
 **What:** Precomputed adaptive-buffer pickles per dataset (K100, L128 and L1024).
 
 ### eval_vus
-**What:** `evaluate_ffvus.py` output. VUS vs sklearn APS mean |err| ~8e-17 (exact);
+**What:** `evaluate_vus.py` output. VUS vs sklearn APS mean |err| ~8e-17 (exact);
 CPU vs GPU mean ~2e-3, max ~0.21 (the existence-matrix divergence). Correctness eval.
 
 ### large_buffer / showcase

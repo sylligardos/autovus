@@ -46,7 +46,7 @@ _Deadline: 2026-06-11_
 ## Phase 2 — Migrate from TSB-UAD to TSB-AD
 
 **Completed (2026-05-21, two sessions):**
-- [x] `evaluate_ffvus.py` — replaced Dataloader/Scoreloader/analyze_label with TSBADParser; helpers (time_it, auc_pr_wrapper, _analyze_label) are now local
+- [x] `evaluate_vus.py` — replaced Dataloader/Scoreloader/analyze_label with TSBADParser; helpers (time_it, auc_pr_wrapper, _analyze_label) are now local
 - [x] `compute_metric.py` — replaced load_tsb/analyze_label with TSBADParser; natural_keys and load_synthetic are now local; fixed pre-existing `to_no_global_maskcsv` typo → `to_csv`
 - [x] `generate_synthetic.py` — copied _analyze_label locally, removed utils.utils import
 - [x] `verify_cumulative.py` — replaced load_tsb with TSBADParser (dataset YAHOO, 10 series)
@@ -68,7 +68,7 @@ _Deadline: 2026-06-11_
 - `tsb.get_detectors()` → list of detector names
 - `tsb.get_datasets()` → list of dataset names
 - Precomputed output dir: `experiments/precomputed/` (changed from `data/precomputed/`)
-- `analyze_label` has no replacement in tsbadparser — copy `_analyze_label` from `evaluate_ffvus.py`
+- `analyze_label` has no replacement in tsbadparser — copy `_analyze_label` from `evaluate_vus.py`
 
 ### Remaining migrations (not in original plan)
 

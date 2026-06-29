@@ -134,7 +134,7 @@ def _analyze_label(label):
 # Main evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
+def evaluate_vus(testing, experiment_dir=None, detector_name=None):
     tic = time.time()
 
     tsb = TSBADParser()
@@ -151,10 +151,10 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     # Load time series
     if testing:
         fnames, timeseries, labels = tsb.load_timeseries(dataset=['NAB'])
-        fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]
+        fnames, timeseries, labels = fnames[:1], timeseries[:1], labels[:1]
     else:
         fnames, timeseries, labels = tsb.load_timeseries(load_all=True)
-        sampled_idx = np.random.choice(len(fnames), size=min(50, len(fnames)), replace=False)
+        sampled_idx = np.random.choice(len(fnames), size=min(100, len(fnames)), replace=False)
         fnames     = [fnames[i]     for i in sampled_idx]
         timeseries = [timeseries[i] for i in sampled_idx]
         labels     = [labels[i]     for i in sampled_idx]
@@ -230,6 +230,11 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
     results = []
     problematic_timeseries = []
 
+    # Pre-populate from a prior run so reruns expand rather than replace.
+    if experiment_dir is not None:
+        for f in glob.glob(os.path.join('experiments', experiment_dir, 'results', '*.csv')):
+            results.extend(pd.read_csv(f).to_dict('records'))
+
     def _info_meta():
         return {
             "Experiment":       "Evaluate FF-VUS-PR",
@@ -243,17 +248,23 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
             "Detector":         detector_name if detector_name is not None else 'all',
         }
 
-    try:
-      for detector in tqdm(detectors_to_run, desc='Detectors', disable=len(detectors_to_run) == 1):
-        # load_scores_and_delete mutates lists in-place — pass copies each time
-        fnames_det    = list(fnames)
-        ts_det        = list(timeseries)
-        labels_det    = list(labels)
-
-        scores, _ = load_scores_aligned(tsb, fnames_det, ts_det, labels_det, detector)
+    # Phase 1: load all scores up-front before running any comparisons.
+    print(f"Loading scores for {len(detectors_to_run)} detector(s)...")
+    all_detector_data = {}
+    for detector in tqdm(detectors_to_run, desc='Loading scores', disable=len(detectors_to_run) == 1):
+        fnames_det = list(fnames)
+        ts_det     = list(timeseries)
+        labels_det = list(labels)
+        scores, _  = load_scores_aligned(tsb, fnames_det, ts_det, labels_det, detector)
         if not scores:
             print(f"[{detector}] No valid scores found, skipping.")
             continue
+        all_detector_data[detector] = (fnames_det, ts_det, labels_det, scores)
+
+    # Phase 2: run comparisons.
+    try:
+      for detector in tqdm(list(all_detector_data), desc='Detectors', disable=len(all_detector_data) == 1):
+        fnames_det, ts_det, labels_det, scores = all_detector_data[detector]
 
         for i, (filename, label, curr_scores) in enumerate(zip(fnames_det, labels_det, scores)):
             score = curr_scores[0, :]  # (1, T) -> (T,)
@@ -297,18 +308,15 @@ def evaluate_ffvus(testing, experiment_dir=None, detector_name=None):
             curr_result.update({'FF-AUC-PR-GPU': ff_auc_pr_gpu.item(), 'FF-AUC-PR-GPU time': ff_auc_gpu_time})
             curr_result.update(ff_auc_gpu_time_analysis)
 
-            print(
-                f"[{detector}/{i}] ΔAUC: {abs(auc_pr - ff_auc_pr):.2e} | "
+            tqdm.write(
+                f"[{detector}/{i}] "
+                f"ΔAUC: {abs(auc_pr - ff_auc_pr):.2e} | "
                 f"ΔAUC-GPU: {abs(auc_pr - ff_auc_pr_gpu):.2e} | "
                 f"ΔVUS: {abs(vus_pr - ff_vus_pr):.2e} | "
                 f"ΔVUS-GPU: {abs(vus_pr - ff_vus_pr_gpu):.2e} | "
-                f"AUCx{ff_auc_time / auc_pr_time:.2f} | "
-                f"AUC-GPUx{ff_auc_gpu_time / auc_pr_time:.2f} | "
-                f"VUS/{vus_time / ff_vus_time:.2f} | "
-                f"VUS-GPU/{vus_time / ff_vus_gpu_time:.2f} | "
+                f"VUS/{vus_time / ff_vus_time:.1f}x | "
                 f"Len:{label.shape[0]} | "
-                f"#Anom:{n_anomalies} | "
-                f"Avg len:{anomalies_avg_length:.2f}"
+                f"#Anom:{n_anomalies}"
             )
 
             curr_result.update({
@@ -375,7 +383,7 @@ if __name__ == "__main__":
 
     args = arg_parser.parse_args()
 
-    evaluate_ffvus(
+    evaluate_vus(
         testing=args.test,
         experiment_dir=args.experiment,
         detector_name=args.detector,
