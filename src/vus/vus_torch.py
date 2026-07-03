@@ -116,6 +116,7 @@ class VUSTorch():
 
         self.warmup()
 
+
     def warmup(self):
         '''
         Torch first computation is slower than the rest because of JIT, etc. This function does a dummy computation
@@ -153,7 +154,7 @@ class VUSTorch():
         TODO: There is still some error on MITDB two first time series, CPU version too
         """
         label = self._to_tensor(label, dtype=torch.int8)
-        score = self._to_tensor(score, dtype=torch.float32)
+        score = self._to_tensor(score, dtype=torch.float64)
         if label.numel() == 0:
             raise ValueError("label is empty — cannot compute VUS on an empty sequence")
         self.update_max_memory_tokens()
@@ -749,7 +750,7 @@ class VUSTorch():
         # region id, per slope row. (s, T) -> (s, K+1). Bin 0 = non-anomaly,
         # dropped afterwards. Empty bins stay -inf so they never clear a
         # threshold (and don't inflate the found count).
-        seg_max = torch.full((s, K + 1), float('-inf'), device=device)
+        seg_max = torch.full((s, K + 1), float('-inf'), device=device, dtype=score.dtype)
         seg_max.scatter_reduce_(1, labels_stairs.long(), score[None, :].expand(s, T),
                                 reduce='amax', include_self=True)
         seg_max = seg_max[:, 1:]                           # (s, K)

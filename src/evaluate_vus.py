@@ -151,7 +151,7 @@ def evaluate_vus(testing, experiment_dir=None, detector_name=None):
     # Load time series
     if testing:
         fnames, timeseries, labels = tsb.load_timeseries(dataset=['NAB'])
-        fnames, timeseries, labels = fnames[:1], timeseries[:1], labels[:1]
+        fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]
     else:
         fnames, timeseries, labels = tsb.load_timeseries(load_all=True)
         sampled_idx = np.random.choice(len(fnames), size=min(100, len(fnames)), replace=False)
@@ -336,8 +336,9 @@ def evaluate_vus(testing, experiment_dir=None, detector_name=None):
             if not curr_result["VUS-PR equal"]:
                 problematic_timeseries.append((filename, detector))
 
-            cpu_err = curr_result["VUS-PR - FF-VUS-PR"]
-            gpu_err = curr_result["VUS-PR - FF-VUS-PR-GPU"]
+            # Extra analysis when error is high (Abandoned idea)
+            # cpu_err = curr_result["VUS-PR - FF-VUS-PR"]
+            # gpu_err = curr_result["VUS-PR - FF-VUS-PR-GPU"]
             # if cpu_err > 1e-10 or gpu_err > 1e-4:
             #     debug_info = compare_vus_steps(label, score, ff_vus_numpy, ff_vus_torch)
             #     curr_result.update(debug_info)
@@ -357,7 +358,7 @@ def evaluate_vus(testing, experiment_dir=None, detector_name=None):
         return
 
     df = pd.DataFrame(results)
-    print(df)
+    print(df[['Time series', 'VUS-PR', 'FF-VUS-PR', 'FF-VUS-PR-GPU']])
     print(f"AUC-PR - FF-AUC-PR: average dif.: {df['AUC-PR - FF-AUC-PR'].mean()}, "
           f"max dif.: {df['AUC-PR - FF-AUC-PR'].max()}, "
           f"avg slow down: {df['AUC-PR Slow down'].mean()}")

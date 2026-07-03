@@ -8,6 +8,7 @@
 import argparse
 import math
 import os
+import random
 import re
 import time
 
@@ -84,6 +85,7 @@ def compute_metric(
         thresholds=None,
         zita=(1 / math.sqrt(2)),
         save_path=None,
+        n_thresholds=None,
 ):
     metric_name = metric.replace('_', '-').upper()
     results = []
@@ -99,6 +101,7 @@ def compute_metric(
             conf_matrix=conf_matrix,
             thresholds=thresholds,
             side='both',
+            max_thresholds = n_thresholds if n_thresholds is not None else 2000,
         )
     elif metric == 'ff_vus_gpu':
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -112,10 +115,11 @@ def compute_metric(
             existence=existence,
             conf_matrix=conf_matrix,
             device=device,
-            thresholds=thresholds if thresholds in ('all_unique', 'subsampled', 'pr_relevant_fuzzy') else 'pr_relevant_fuzzy',
+            thresholds=thresholds,
+            max_thresholds = n_thresholds if n_thresholds is not None else 2000,
         )
 
-    for filename, label, score in tqdm(data, desc=f'Computing {metric}'):
+    for filename, label, score, detector in tqdm(data, desc=f'Computing {metric}'):
         length, n_anomalies, anomalies_avg_length = _analyze_label(label)
         curr_result = {
             "Time series":             filename,
@@ -123,6 +127,8 @@ def compute_metric(
             "Number of anomalies":     n_anomalies,
             "Anomalies average length": float(anomalies_avg_length),
         }
+        if detector is not None:
+            curr_result["Detector"] = detector
 
         if label.shape != score.shape:
             min_len = min(label.shape[0], score.shape[0])
@@ -142,8 +148,8 @@ def compute_metric(
 
             with torch.no_grad():
                 if metric == 'ff_vus_gpu':
-                    label = torch.tensor(label, device=device, dtype=torch.uint8)
-                    score = torch.tensor(score, device=device, dtype=torch.float16)
+                    label = torch.tensor(label, device=device)
+                    score = torch.tensor(score, device=device)
 
                 (metric_value, ff_vus_time_analysis), metric_time = ff_vus.compute(label, score)
             curr_result.update(ff_vus_time_analysis)
@@ -155,6 +161,7 @@ def compute_metric(
             metric_value, metric_time = sylli_get_metrics(
                 label, score, metric, slope_size,
                 existence=True if existence != 'None' else False,
+                **({"max_thresholds": n_thresholds} if n_thresholds is not None else {}),
             )
             if metric == 'softed':
                 metric_value, metric_time = metric_value
@@ -189,6 +196,8 @@ def compute_metric_over_dataset(
         zita=(1 / math.sqrt(2)),
         testing=False,
         experiment_dir=None,
+        n_thresholds=None,
+        detector=None,
     ):
 
     # Load dataset
@@ -199,15 +208,44 @@ def compute_metric_over_dataset(
             fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]
         else:
             fnames, timeseries, labels = tsb.load_timeseries(load_all=True)
+
         detectors = tsb.get_detectors()
-        scores_grouped, _ = tsb.load_scores_and_delete(fnames, timeseries, labels, detectors=detectors[:1])
-        # Each scores_grouped[i] is (1, T); extract single 1-D score per time series
-        scores = [s[0] for s in scores_grouped]
-        data = zip(fnames, labels, scores)
+        # 'random' loads every detector then picks one per time series, so the
+        # parser must load all of them (same cost as 'all').
+        per_series_random = detector == 'random'
+        if detector is None:
+            selected = [detectors[0]]
+        elif detector == 'all' or per_series_random:
+            selected = detectors
+        elif detector in detectors:
+            selected = [detector]
+        else:
+            raise ValueError(f"Unknown detector '{detector}'. Available: {detectors}")
+        print(f"Using detector(s): {'random per series, drawn from all' if per_series_random else selected}")
+
+        scores_grouped, _ = tsb.load_scores_and_delete(fnames, timeseries, labels, detectors=selected)
+        # Each scores_grouped[i] has shape (len(selected), T).
+        if per_series_random:
+            # One random detector per time series.
+            data = []
+            for fname, label, score_stack in zip(fnames, labels, scores_grouped):
+                i = random.randrange(len(selected))
+                data.append((fname, label, score_stack[i], selected[i]))
+        else:
+            # Emit one data entry per (time series, detector) so every detector
+            # gets its own row.
+            data = [
+                (fname, label, score, det)
+                for fname, label, score_stack in zip(fnames, labels, scores_grouped)
+                for det, score in zip(selected, score_stack)
+            ]
     elif 'syn_' in dataset:
-        data = load_synthetic(dataset=dataset, testing=testing, iterator=True)
+        data = [(f, label, score, None)
+                for f, label, score in load_synthetic(dataset=dataset, testing=testing, iterator=True)]
     else:
         raise ValueError(f"Wrong argument for dataset: {dataset}")
+
+    data = list(data)
 
     if metric == 'all':
         metrics = ['ff_vus_gpu', 'auc', 'ff_vus', 'affiliation', 'range_auc', 'vus', 'rf']
@@ -241,7 +279,7 @@ def compute_metric_over_dataset(
                 curr_save_path = None
 
             df = compute_metric(metric, data, global_mask, slope_size, step, slopes,
-                                existence, conf_matrix, thresholds, zita, curr_save_path)
+                                existence, conf_matrix, thresholds, zita, curr_save_path, n_thresholds)
 
             if not df.empty:
                 print(df)
@@ -307,6 +345,7 @@ def compute_metric_over_dataset(
                     "Existence": existence,
                     "Confusion matrix": conf_matrix,
                     "Thresholds": thresholds,
+                    "Detector": detector,
                     "Time": df.iloc[:, -1].sum() if not df.empty else 0,
                 }])
                 info_df.to_csv(os.path.join(info_path, filename), index=False)
@@ -340,6 +379,8 @@ if __name__ == "__main__":
                         help='FFVUS slope angle parameter, must be in [0, 1] (default: 1/sqrt(2))')
     parser.add_argument('--test',        action='store_true', help='Run in testing mode (limits the data for fast testing)')
     parser.add_argument('--experiment',  type=str,   default=None,  help='Directory to save experiment results and info')
+    parser.add_argument('--n_thresholds', type=int,  default=None,  help='Override max thresholds for ff_vus, ff_vus_gpu, and vus (default: use each metric\'s built-in default)')
+    parser.add_argument('--detector',    type=str,   default=None,  help="TSB detector to use: a detector name, 'random' (a random detector per time series), or 'all' (every detector). Default: first detector")
 
     args = parser.parse_args()
 
@@ -365,4 +406,6 @@ if __name__ == "__main__":
             zita=args.zita,
             testing=args.test,
             experiment_dir=args.experiment,
+            n_thresholds=args.n_thresholds,
+            detector=args.detector,
         )

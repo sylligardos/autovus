@@ -663,11 +663,13 @@ class metricor:
             ap_3d[window] = (AP_range)
         return sum(ap_3d) / len(window_3d)
     
-    def sylli_RangeAUC(self, labels, score, window):
+    def sylli_RangeAUC(self, labels, score, window, max_thresholds=None):
         thresholds = np.sort(np.unique(score))[::-1]
+        if max_thresholds is not None and len(thresholds) > max_thresholds:
+            thresholds = thresholds[::len(thresholds) // max_thresholds]
         P = np.sum(labels)
         labels = self.extend_postive_range(labels, window=window)
-        
+
         L = self.range_convers_new(labels)
         TF_list = np.zeros((len(thresholds) + 2, 2))
         Precision_list = np.ones(len(thresholds) + 1)

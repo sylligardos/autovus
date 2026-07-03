@@ -61,7 +61,7 @@ def sylli_get_metrics(label, score, metric, slope_size=None, existence=True, max
     elif metric == 'affiliation':
         metric_value = sylli_affiliation(label, score)
     elif metric == 'range_auc' and slope_size is not None:
-        metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size)
+        metric_value = metricor().sylli_RangeAUC(label, score, window=slope_size, max_thresholds=max_thresholds)
     elif metric == 'auc':
         metric_value = metrics.average_precision_score(label, score)
     # elif metric == 'softed':
