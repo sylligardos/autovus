@@ -199,7 +199,9 @@ class VUSTorch():
         # n_slopes is tiny (the AUC variant has n_slopes == 1).
         labels_mem_size = self.n_slopes * len(label) * 4
         score_mask_mem_size = thresholds.shape[0] * len(label)
-        mem_size = labels_mem_size + score_mask_mem_size
+        n_anomalies = start_with_edges.shape[0]
+        existence_mem_size = self.n_slopes * n_anomalies * n_thresholds if self.existence else 0
+        mem_size = labels_mem_size + score_mask_mem_size + existence_mem_size
         n_splits = np.ceil(mem_size / self.max_memory_tokens).astype(int)
         n_splits = int(min(max(n_splits, 1), len(label)))
         split_points = self.find_safe_splits(label, safe_mask, n_splits)
@@ -756,8 +758,16 @@ class VUSTorch():
         seg_max = seg_max[:, 1:]                           # (s, K)
 
         # n_found[s, t] = number of regions whose max clears threshold t.
-        # (s, K, t) is cheap because K (number of anomalies) is tiny.
-        n_anomalies_found = (seg_max[:, :, None] >= thresholds[None, None, :]).sum(dim=1).to(torch.float32)
+        # Materialising the (s, K, t) comparison is not an option: on
+        # densely-anomalous series K can reach several thousand (e.g. the Stock
+        # series have ~2500 tiny anomalies), and such series have NO anomaly-free
+        # gap, so the time-chunking in compute() cannot split them (find_safe_splits
+        # falls back to a single chunk). Reformulate as a per-slope searchsorted:
+        # count of regions with max >= t is K minus the number strictly below t.
+        # This uses (s, K) + (s, t) memory instead of s * K * t.
+        sorted_seg, _ = torch.sort(seg_max, dim=1)                 # (s, K) ascending; -inf bins sort first
+        below = torch.searchsorted(sorted_seg, thresholds[None, :].expand(s, t).contiguous(), right=False)
+        n_anomalies_found = (K - below).to(torch.float32)          # (s, t)
 
         if normalize:
             return n_anomalies_found / total_anomalies

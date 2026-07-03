@@ -1,13 +1,23 @@
 """
-Compare confusion matrix implementations: trivial, dynamic, dynamic_plus, sparse.
-Runs all on a loaded time series and reports timing and correctness.
+Benchmark confusion matrix implementations over a whole dataset.
+
+CPU (numpy): trivial, dynamic, dynamic_plus, sparse (scipy.sparse)
+GPU (torch): trivial, dynamic, dynamic_plus, cusparse (torch sparse COO)
+
+For every time series the inputs (masked labels with slopes, thresholded score
+mask) are prepared once, then each implementation is timed n_runs times and
+checked for correctness against the trivial implementation.
 """
 
+import argparse
 import os
 import sys
 import time
+
 import numpy as np
+import pandas as pd
 import torch
+from tqdm import tqdm
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
@@ -18,236 +28,266 @@ from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 
 
-def compare_confusion(vus, labels, sm, n_runs=10, atol=1e-8, rtol=1e-5):
-    implementations = {
-        'trivial':      vus.conf_matrix_trivial,
-        'dynamic':      vus.conf_matrix_dyn,
-        'dynamic_plus': vus.conf_matrix_dyn_plus,
-        'sparse':       vus.sparse_conf_matrix,
-    }
+def time_implementation(func, args, n_runs, cuda=False):
+    times = []
+    for _ in range(n_runs):
+        if cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        func(*args)
+        if cuda:
+            torch.cuda.synchronize()
+        times.append(time.perf_counter() - t0)
+    return times
 
+
+def benchmark_series(implementations, labels_slopes, sm, n_runs, cuda=False, atol=1e-5, rtol=1e-5):
+    """Time every implementation on prepared inputs and compare outputs to trivial."""
+    row = {}
     results = {}
-    timings = {}
 
     for name, func in implementations.items():
-        results[name] = func(labels, sm)
-        times = []
-        for _ in range(n_runs):
-            t0 = time.time()
-            func(labels, sm)
-            times.append(time.time() - t0)
-        timings[name] = {
-            'mean': np.mean(times), 'std': np.std(times),
-            'min': np.min(times),   'max': np.max(times),
-        }
+        raw = func(labels_slopes, sm)
+        if cuda:
+            raw = tuple(t.float().cpu().numpy() for t in raw)
+        results[name] = raw
+        times = time_implementation(func, (labels_slopes, sm), n_runs, cuda=cuda)
+        row[f'{name} mean'] = float(np.mean(times))
+        row[f'{name} std'] = float(np.std(times))
+        row[f'{name} min'] = float(np.min(times))
 
     ref_fn, ref_tp, ref_pos = results['trivial']
-    comparisons = {}
-    all_match = True
-
     for name, (fn, tp, pos) in results.items():
         if name == 'trivial':
             continue
-        fn_match  = np.allclose(fn,  ref_fn,  atol=atol, rtol=rtol)
-        tp_match  = np.allclose(tp,  ref_tp,  atol=atol, rtol=rtol)
-        pos_match = np.allclose(pos, ref_pos, atol=atol, rtol=rtol)
-        matches = fn_match and tp_match and pos_match
-        all_match = all_match and matches
-        comparisons[name] = {
-            'matches': matches,
-            'fn_match': fn_match,   'fn_max_diff':  np.max(np.abs(fn  - ref_fn))  if not fn_match  else 0,
-            'tp_match': tp_match,   'tp_max_diff':  np.max(np.abs(tp  - ref_tp))  if not tp_match  else 0,
-            'pos_match': pos_match, 'pos_max_diff': np.max(np.abs(pos - ref_pos)) if not pos_match else 0,
-        }
+        fn, ref_fn_s = np.asarray(fn).squeeze(), np.asarray(ref_fn).squeeze()
+        matches = (np.allclose(fn, ref_fn_s, atol=atol, rtol=rtol)
+                   and np.allclose(tp, ref_tp, atol=atol, rtol=rtol)
+                   and np.allclose(pos, ref_pos, atol=atol, rtol=rtol))
+        row[f'{name} match'] = bool(matches)
+        row[f'{name} max diff'] = float(max(
+            np.max(np.abs(fn - ref_fn_s)),
+            np.max(np.abs(np.asarray(tp) - np.asarray(ref_tp))),
+            np.max(np.abs(np.asarray(pos) - np.asarray(ref_pos))),
+        ))
 
-    print("=" * 70)
-    print("CONFUSION MATRIX IMPLEMENTATIONS COMPARISON")
-    print("=" * 70)
-    print(f"Input shapes: labels={labels.shape}, sm={sm.shape}")
-    print(f"Number of timing runs: {n_runs}")
-    print()
-
-    print("TIMING RESULTS (seconds):")
-    print("-" * 70)
-    print(f"{'Implementation':<15} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12}")
-    print("-" * 70)
-    for name, t in timings.items():
-        print(f"{name:<15} {t['mean']:>12.6f} {t['std']:>12.6f} {t['min']:>12.6f} {t['max']:>12.6f}")
-    print()
-
-    print("SPEEDUP (relative to trivial):")
-    print("-" * 70)
-    trivial_time = timings['trivial']['mean']
-    for name, t in timings.items():
-        print(f"{name:<15} {trivial_time / t['mean']:>8.2f}x")
-    print()
-
-    print("CORRECTNESS (compared to trivial):")
-    print("-" * 70)
-    for name, comp in comparisons.items():
-        status = "MATCH" if comp['matches'] else "MISMATCH"
-        print(f"{name:<15} {status}")
-        if not comp['matches']:
-            print(f"  fn_match={comp['fn_match']}  (max_diff: {comp['fn_max_diff']:.2e})")
-            print(f"  tp_match={comp['tp_match']}  (max_diff: {comp['tp_max_diff']:.2e})")
-            print(f"  pos_match={comp['pos_match']} (max_diff: {comp['pos_max_diff']:.2e})")
-    print()
-    print("=" * 70)
-    print(f"OVERALL: {'ALL IMPLEMENTATIONS MATCH' if all_match else 'SOME IMPLEMENTATIONS DIFFER'}")
-    print("=" * 70)
-
-    return {'all_match': all_match, 'comparisons': comparisons, 'timings': timings, 'results': results}
+    return row
 
 
-def compare_torch_confusion(vus, labels, sm, n_runs=10, atol=1e-5, rtol=1e-5):
-    implementations = {
-        'trivial':      vus.conf_matrix_trivial,
-        'dynamic':      vus.conf_matrix_dyn,
-        'dynamic_plus': vus.conf_matrix_dyn_plus,
-        'cusparse':     vus.conf_matrix_cusparse,
-    }
+def prepare_numpy(vus, label, score):
+    ((start_ne, end_ne), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label)
+    safe_mask, _ = vus.create_safe_mask(label, start_we, end_we, extra_safe=vus.global_mask)
+    label, score = label[safe_mask], score[safe_mask]
+    if label.sum() == 0:
+        return None, None
 
-    results = {}
-    timings = {}
-
-    for name, func in implementations.items():
-        try:
-            raw = func(labels, sm)
-            results[name] = tuple(t.float().cpu().numpy() for t in raw)
-            times = []
-            for _ in range(n_runs):
-                t0 = time.time()
-                func(labels, sm)
-                times.append(time.time() - t0)
-            timings[name] = {
-                'mean': np.mean(times), 'std': np.std(times),
-                'min': np.min(times),   'max': np.max(times),
-            }
-        except Exception as e:
-            print(f"{name}: Error - {e}")
-
-    ref_fn, ref_tp, ref_pos = results['trivial']
-    comparisons = {}
-    all_match = True
-
-    for name, (fn, tp, pos) in results.items():
-        if name == 'trivial':
-            continue
-        fn_match  = np.allclose(fn.squeeze(),  ref_fn.squeeze(),  atol=atol, rtol=rtol)
-        tp_match  = np.allclose(tp,  ref_tp,  atol=atol, rtol=rtol)
-        pos_match = np.allclose(pos, ref_pos, atol=atol, rtol=rtol)
-        matches = fn_match and tp_match and pos_match
-        all_match = all_match and matches
-        comparisons[name] = {
-            'matches': matches,
-            'fn_match': fn_match,   'fn_max_diff':  np.max(np.abs(fn.squeeze()  - ref_fn.squeeze()))  if not fn_match  else 0,
-            'tp_match': tp_match,   'tp_max_diff':  np.max(np.abs(tp  - ref_tp))  if not tp_match  else 0,
-            'pos_match': pos_match, 'pos_max_diff': np.max(np.abs(pos - ref_pos)) if not pos_match else 0,
-        }
-
-    print("=" * 70)
-    print("CONFUSION MATRIX IMPLEMENTATIONS COMPARISON (Torch)")
-    print("=" * 70)
-    print(f"Input shapes: labels={labels.shape}, sm={sm.shape}")
-    print(f"Number of timing runs: {n_runs}")
-    print()
-
-    print("TIMING RESULTS (seconds):")
-    print("-" * 70)
-    print(f"{'Implementation':<15} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12}")
-    print("-" * 70)
-    for name, t in timings.items():
-        print(f"{name:<15} {t['mean']:>12.6f} {t['std']:>12.6f} {t['min']:>12.6f} {t['max']:>12.6f}")
-    print()
-
-    print("SPEEDUP (relative to trivial):")
-    print("-" * 70)
-    trivial_time = timings['trivial']['mean']
-    for name, t in timings.items():
-        print(f"{name:<15} {trivial_time / t['mean']:>8.2f}x")
-    print()
-
-    print("CORRECTNESS (compared to trivial):")
-    print("-" * 70)
-    for name, comp in comparisons.items():
-        status = "MATCH" if comp['matches'] else "MISMATCH"
-        print(f"{name:<15} {status}")
-        if not comp['matches']:
-            print(f"  fn_match={comp['fn_match']}  (max_diff: {comp['fn_max_diff']:.2e})")
-            print(f"  tp_match={comp['tp_match']}  (max_diff: {comp['tp_max_diff']:.2e})")
-            print(f"  pos_match={comp['pos_match']} (max_diff: {comp['pos_max_diff']:.2e})")
-    print()
-    print("=" * 70)
-    print(f"OVERALL: {'ALL IMPLEMENTATIONS MATCH' if all_match else 'SOME IMPLEMENTATIONS DIFFER'}")
-    print("=" * 70)
-
-    return {'all_match': all_match, 'comparisons': comparisons, 'timings': timings, 'results': results}
+    ((start_ne, end_ne), _), _ = vus.get_anomalies_coordinates(label)
+    thresholds, _ = vus.get_unique_thresholds(score)
+    sm, _ = vus.get_score_mask(score, thresholds)
+    labels_slopes, _ = vus.add_slopes(label, start_ne, end_ne, None, None)
+    return labels_slopes, sm
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--test', action='store_true')
-    parser.add_argument('--slope_size', type=int, default=128)
-    parser.add_argument('--n_runs', type=int, default=10)
-    parser.add_argument('--backend', choices=['numpy', 'torch'], default='numpy')
-    args = parser.parse_args()
+def prepare_torch(vus, label, score):
+    label = torch.tensor(label, dtype=torch.int8, device=vus.device)
+    score = torch.tensor(score, dtype=torch.float32, device=vus.device)
 
-    tsb = TSBADParser()
-    n = 1 if args.test else 5
-    filenames, ts_list, labels = tsb.load_timeseries(dataset=['YAHOO'])
-    filenames, ts_list, labels = filenames[:n], ts_list[:n], labels[:n]
-    raw_scores, _ = tsb.load_scores_and_delete(filenames, ts_list, labels)
-    scores = [s[0] for s in raw_scores]
+    (_, (start_we, end_we)), _ = vus.get_anomalies_coordinates(label)
+    safe_mask, _ = vus.create_safe_mask(label, start_we, end_we, extra_safe=vus.global_mask)
+    label, score = label[safe_mask], score[safe_mask]
+    if label.sum() == 0:
+        return None, None
 
-    if args.backend == 'torch':
-        vus = VUSTorch(slope_size=args.slope_size, step=1, global_mask=True,
-                       existence=True, conf_matrix='dynamic_plus')
+    (_, (start_we, end_we)), _ = vus.get_anomalies_coordinates(label)
+    pos, _ = vus.distance_from_anomaly(label, start_we, end_we)
+    thresholds, _ = vus.get_unique_thresholds(score)
+    sm, _ = vus.get_score_mask(score, thresholds)
+    labels_slopes, _ = vus.add_slopes(label, pos)
+    return labels_slopes, sm
 
-        for fname, label, score in zip(filenames, labels, scores):
-            min_len = min(len(label), len(score))
-            label_t = torch.tensor(label[:min_len], dtype=torch.int8)
-            score_t = torch.tensor(score[:min_len], dtype=torch.float32)
 
-            ((_), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label_t)
-            safe_mask, _ = vus.create_safe_mask(label_t, start_we, end_we, extra_safe=vus.global_mask)
-            label_t, score_t = label_t[safe_mask], score_t[safe_mask]
-            if label_t.sum() == 0:
-                continue
+def compare_over_dataset(
+        dataset,
+        backend,
+        global_mask=True,
+        slope_size=128,
+        step=1,
+        thresholds='pr_relevant_fuzzy',
+        n_runs=10,
+        testing=False,
+        experiment_dir=None,
+        detector=None,
+    ):
+    # Load dataset
+    if dataset == 'tsb':
+        tsb = TSBADParser()
+        if testing:
+            fnames, timeseries, labels = tsb.load_timeseries(dataset=['NAB'])
+            fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]
+        else:
+            fnames, timeseries, labels = tsb.load_timeseries(load_all=True)
 
-            ((_), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label_t)
-            pos, _ = vus.distance_from_anomaly(label_t, start_we, end_we)
-            thresholds, _ = vus.get_unique_thresholds(score_t)
-            sm, _ = vus.get_score_mask(score_t, thresholds)
-            labels_slopes, _ = vus.add_slopes(label_t, pos)
+        detectors = tsb.get_detectors()
+        if detector is None:
+            selected = [detectors[0]]
+        elif detector == 'all':
+            selected = detectors
+        elif detector in detectors:
+            selected = [detector]
+        else:
+            raise ValueError(f"Unknown detector '{detector}'. Available: {detectors}")
+        print(f"Using detector(s): {selected}")
 
-            print(f"\nFile: {fname}")
-            compare_torch_confusion(vus, labels_slopes, sm, n_runs=args.n_runs)
-            break
-
+        scores_grouped, _ = tsb.load_scores_and_delete(fnames, timeseries, labels, detectors=selected)
+        data = [
+            (fname, label, score, det)
+            for fname, label, score_stack in zip(fnames, labels, scores_grouped)
+            for det, score in zip(selected, score_stack)
+        ]
     else:
-        vus = VUSNumpy(slope_size=args.slope_size, step=1, global_mask=True,
-                       slopes='precomputed', existence='optimized', conf_matrix='dynamic_plus')
+        raise ValueError(f"Wrong argument for dataset: {dataset}")
 
-        for fname, label, score in zip(filenames, labels, scores):
+    backends = ['numpy', 'torch'] if backend == 'both' else [backend]
+
+    if experiment_dir is not None:
+        save_path    = os.path.join('experiments', experiment_dir)
+        results_path = os.path.join(save_path, 'results')
+        info_path    = os.path.join(save_path, 'info')
+        os.makedirs(results_path, exist_ok=True)
+        os.makedirs(info_path,    exist_ok=True)
+
+    all_dfs = {}
+    for curr_backend in backends:
+        if curr_backend == 'torch':
+            vus = VUSTorch(slope_size=slope_size, step=step, global_mask=global_mask,
+                           existence=True, conf_matrix='dynamic_plus', thresholds=thresholds)
+            implementations = {
+                'trivial':      vus.conf_matrix_trivial,
+                'dynamic':      vus.conf_matrix_dyn,
+                'dynamic_plus': vus.conf_matrix_dyn_plus,
+                'cusparse':     vus.conf_matrix_cusparse,
+            }
+            cuda = vus.device == 'cuda'
+        else:
+            vus = VUSNumpy(slope_size=slope_size, step=step, global_mask=global_mask,
+                           slopes='precomputed', existence='optimized',
+                           conf_matrix='dynamic_plus', thresholds=thresholds)
+            implementations = {
+                'trivial':      vus.conf_matrix_trivial,
+                'dynamic':      vus.conf_matrix_dyn,
+                'dynamic_plus': vus.conf_matrix_dyn_plus,
+                'sparse':       vus.sparse_conf_matrix,
+            }
+            cuda = False
+
+        if experiment_dir is not None:
+            filename = f"{dataset}_confmatrix_{curr_backend}_{slope_size}_{step}_{thresholds}_{n_runs}runs.csv"
+            curr_save_path = os.path.join(results_path, filename)
+        else:
+            curr_save_path = None
+
+        rows = []
+        for fname, label, score, det in tqdm(data, desc=f'Benchmarking conf matrix ({curr_backend})'):
             min_len = min(len(label), len(score))
             label, score = label[:min_len], score[:min_len]
 
-            ((start_no_edges, end_no_edges), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label)
-            safe_mask, _ = vus.create_safe_mask(label, start_we, end_we, extra_safe=vus.global_mask)
-            label, score = label[safe_mask], score[safe_mask]
-            if label.sum() == 0:
+            try:
+                with torch.no_grad():
+                    if curr_backend == 'torch':
+                        labels_slopes, sm = prepare_torch(vus, label, score)
+                    else:
+                        labels_slopes, sm = prepare_numpy(vus, label, score)
+                    if labels_slopes is None:
+                        continue
+
+                    row = {
+                        'Time series':   fname,
+                        'Detector':      det,
+                        'Length':        min_len,
+                        'Masked length': int(labels_slopes.shape[1]),
+                        'Buffers (L)':   int(labels_slopes.shape[0]),
+                        'Thresholds (N)': int(sm.shape[0]),
+                    }
+                    row.update(benchmark_series(implementations, labels_slopes, sm,
+                                                n_runs=n_runs, cuda=cuda))
+            except Exception as e:
+                print(f"\n{fname}: Error - {e}")
                 continue
 
-            ((start_no_edges, end_no_edges), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label)
-            thresholds, _ = vus.get_unique_thresholds(score)
-            sm, _ = vus.get_score_mask(score, thresholds)
-            labels_slopes, _ = vus.add_slopes(label, start_no_edges, end_no_edges, None)
+            if curr_save_path is not None:
+                df_row = pd.DataFrame([row])
+                write_header = not os.path.exists(curr_save_path)
+                df_row.to_csv(curr_save_path, mode='a', header=write_header, index=False)
+            rows.append(row)
 
-            print(f"\nFile: {fname}")
-            compare_confusion(vus, labels_slopes, sm, n_runs=args.n_runs)
-            break
+        df = pd.DataFrame(rows)
+        all_dfs[curr_backend] = df
+        if df.empty:
+            continue
+
+        print(f"\n=== {curr_backend.upper()} summary over {len(df)} series ===")
+        trivial_total = df['trivial mean'].sum()
+        for name in implementations:
+            total = df[f'{name} mean'].sum()
+            line = f"{name:<15} total {total:>10.4f}s   speedup vs trivial {trivial_total / total:>8.2f}x"
+            if name != 'trivial':
+                line += f"   match {df[f'{name} match'].mean() * 100:.1f}%   max diff {df[f'{name} max diff'].max():.2e}"
+            print(line)
+
+        if experiment_dir is not None:
+            info_df = pd.DataFrame([{
+                "GPU": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                "GPU Memory (GB)": round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2) if torch.cuda.is_available() else None,
+                "CPU": os.popen("lscpu | grep 'Model name' | awk -F ':' '{print $2}'").read().strip(),
+                "Cores": os.cpu_count(),
+                "RAM (GB)": round(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024.**3), 2) if hasattr(os, 'sysconf') else None,
+                "Platform": os.uname().sysname if hasattr(os, 'uname') else None,
+                "Platform-release": os.uname().release if hasattr(os, 'uname') else None,
+                "Python version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+                "Experiment": f"Confusion matrix benchmark ({curr_backend})",
+                "Number of results": len(df),
+                "Slope size": slope_size,
+                "Step": step,
+                "Global mask": global_mask,
+                "Thresholds": thresholds,
+                "Runs per implementation": n_runs,
+                "Detector": detector,
+            }])
+            info_df.to_csv(os.path.join(info_path, filename), index=False)
+
+    return all_dfs
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog='compare_confusion_matrix',
+        description='Benchmark confusion matrix implementations over a whole dataset'
+    )
+
+    parser.add_argument('--dataset',     type=str,   default='tsb',  help='Dataset to benchmark on')
+    parser.add_argument('--backend',     type=str,   choices=['numpy', 'torch', 'both'], default='both',
+                        help='Which backend(s) to benchmark')
+    parser.add_argument('--no_global_mask', action='store_true',     help='Disable global mask before the confusion matrix step')
+    parser.add_argument('--slope_size',  type=int,   default=128,    help='Number of slopes used for computation')
+    parser.add_argument('--step',        type=int,   default=1,      help='Step size between slopes')
+    parser.add_argument('--thresholds',  type=str,   choices=['all_unique', 'subsampled', 'pr_relevant', 'pr_relevant_fuzzy'], default='pr_relevant_fuzzy',
+                        help='Threshold selection strategy')
+    parser.add_argument('--n_runs',      type=int,   default=10,     help='Timed runs per implementation per series')
+    parser.add_argument('--test',        action='store_true',        help='Run in testing mode (limits the data for fast testing)')
+    parser.add_argument('--experiment',  type=str,   default=None,   help='Directory to save experiment results and info')
+    parser.add_argument('--detector',    type=str,   default=None,   help="TSB detector to use: a detector name or 'all'. Default: first detector")
+
+    args = parser.parse_args()
+
+    compare_over_dataset(
+        dataset=args.dataset,
+        backend=args.backend,
+        global_mask=not args.no_global_mask,
+        slope_size=args.slope_size,
+        step=args.step,
+        thresholds=args.thresholds,
+        n_runs=args.n_runs,
+        testing=args.test,
+        experiment_dir=args.experiment,
+        detector=args.detector,
+    )

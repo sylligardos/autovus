@@ -122,78 +122,18 @@ def existence_optimized_instrumented(vus, labels, score, thresholds, start_point
     }
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--test', action='store_true', help='Run on small subset')
-    parser.add_argument('--slope_size', type=int, default=128, help='Slope size to analyze (default: 128)')
-    args = parser.parse_args()
+def extract_dataset(filename):
+    """TSB-AD filenames look like '001_NAB_id_1_Facility_tr_1007_1st_2014.csv'."""
+    parts = filename.split('_')
+    return parts[1] if len(parts) > 1 else filename
 
-    print("Loading TSB-AD benchmark...")
-    tsb = TSBADParser()
-    if args.test:
-        filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
-        filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]
-    else:
-        filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
-    all_detectors = tsb.get_detectors()
-    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=all_detectors[:1])
-    scores = [s[0] for s in scores_grouped]
-    detectors = [all_detectors[0]] * len(filenames)
 
-    vus = VUSNumpy(
-        slope_size=args.slope_size,
-        step=1,
-        global_mask=True,
-        slopes='precomputed',
-        existence='optimized',
-        conf_matrix='dynamic_plus',
-    )
-
-    results = []
-    skipped_series = 0
-    for idx, (fname, label, score) in enumerate(tqdm(zip(filenames, labels, scores), total=len(labels), desc="Analyzing existence skips")):
-        # Guard: skip if label/score length mismatch
-        min_len = min(len(label), len(score))
-        label, score = label[:min_len], score[:min_len]
-
-        # Replicate the compute pipeline up to existence
-        ((_, _), (start_with_edges, end_with_edges)), _ = vus.get_anomalies_coordinates(label)
-        safe_mask, _ = vus.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=vus.global_mask)
-        thresholds, _ = vus.get_unique_thresholds(score)
-
-        # Apply global mask (same as in compute)
-        label_masked, score_masked = label[safe_mask], score[safe_mask]
-        if len(label_masked) == 0 or label_masked.sum() == 0:
-            skipped_series += 1
-            continue
-        ((start_no_edges, end_no_edges), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label_masked)
-        if start_we.shape[0] == 0:
-            skipped_series += 1
-            continue
-        labels_slopes, _ = vus.add_slopes(label_masked, start_no_edges, end_no_edges, None)
-
-        # Run instrumented existence
-        stats = existence_optimized_instrumented(vus, labels_slopes, score_masked, thresholds, start_we, end_we)
-        stats['filename'] = fname
-        stats['detector'] = detectors[idx]
-        stats['T_original'] = len(label)
-        results.append(stats)
-
-    df = pd.DataFrame(results)
-
-    # Save
-    out_dir = 'experiments/existence_skip_analysis'
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, 'skip_stats.csv')
-    df.to_csv(out_path, index=False)
-    print(f"\nResults saved to {out_path}")
-
-    # Print summary
+def print_overall_summary(df, skipped_series=None):
     print("\n" + "=" * 70)
     print("EXISTENCE SKIP ANALYSIS SUMMARY")
     print("=" * 70)
-    print(f"Total time series analyzed: {len(df)} (skipped {skipped_series} with no anomalies/data issues)")
+    skipped_note = f" (skipped {skipped_series} with no anomalies/data issues)" if skipped_series is not None else ""
+    print(f"Total (time series, detector) pairs analyzed: {len(df)}{skipped_note}")
     print(f"Total buffer iterations (naive):     {df['total_possible'].sum():>12,}")
     print(f"Total buffer iterations (optimized): {df['actual_iters'].sum():>12,}")
     print(f"Total iterations skipped:            {df['skipped'].sum():>12,}")
@@ -218,6 +158,171 @@ def main():
     print(f"  75th:   {df['skip_ratio'].quantile(0.75):.4f}")
     print(f"  Max:    {df['skip_ratio'].max():.4f}")
     print("=" * 70)
+
+
+def print_group_analysis(df, group_col, title):
+    """Per-group breakdown (detector or dataset), worst skip ratio first."""
+    g = df.groupby(group_col)
+    hits = g[['middle_hits', 'left_hits', 'right_hits']].sum()
+    total_hits = hits.sum(axis=1)
+
+    table = pd.DataFrame({
+        'series': g.size(),
+        'anomalies': g['n_anomalies'].sum(),
+        'naive iters': g['total_possible'].sum(),
+        'actual iters': g['actual_iters'].sum(),
+    })
+    table['skip %'] = (1 - table['actual iters'] / table['naive iters']) * 100
+    table['skip ratio μ'] = g['skip_ratio'].mean()
+    table['skip ratio σ'] = g['skip_ratio'].std()
+    table['iters/series'] = table['actual iters'] / table['series']
+    table['middle %'] = hits['middle_hits'] / total_hits * 100
+    table['left %'] = hits['left_hits'] / total_hits * 100
+    table['right %'] = hits['right_hits'] / total_hits * 100
+    table = table.sort_values('skip %')
+
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+    print(f"(sorted by overall skip %, worst first; 'actual iters' = work actually done)")
+    print(table.to_string(float_format=lambda x: f"{x:,.2f}",
+                          formatters={'naive iters': '{:,}'.format,
+                                      'actual iters': '{:,}'.format,
+                                      'skip ratio μ': '{:.4f}'.format,
+                                      'skip ratio σ': '{:.4f}'.format}))
+    print("=" * 70)
+
+
+def run_analysis(df, skipped_series=None):
+    print_overall_summary(df, skipped_series)
+    if df['detector'].nunique() > 1:
+        print_group_analysis(df, 'detector', "PER-DETECTOR ANALYSIS")
+    df = df.assign(dataset=df['filename'].map(extract_dataset))
+    if df['dataset'].nunique() > 1:
+        print_group_analysis(df, 'dataset', "PER-DATASET ANALYSIS")
+
+
+def load_existing_results(path):
+    """Load skip stats from a CSV file, or concatenate all skip_stats*.csv in a directory."""
+    if os.path.isdir(path):
+        files = sorted(f for f in os.listdir(path) if f.startswith('skip_stats') and f.endswith('.csv'))
+        if not files:
+            raise FileNotFoundError(f"No skip_stats*.csv files found in {path}")
+        print(f"Loading {len(files)} result file(s) from {path}: {files}")
+        return pd.concat([pd.read_csv(os.path.join(path, f)) for f in files], ignore_index=True)
+    return pd.read_csv(path)
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Analyze how many buffer iterations the optimized existence algorithm skips'
+    )
+    parser.add_argument('--test', action='store_true', help='Run on small subset')
+    parser.add_argument('--slope_size', type=int, default=128, help='Slope size to analyze (default: 128)')
+    parser.add_argument('--detector', type=str, default=None,
+                        help="TSB detector to use: a detector name or 'all' (every detector). Default: first detector")
+    parser.add_argument('--experiment', type=str, default=None,
+                        help='Directory under experiments/ to save results; results are only saved when given')
+    parser.add_argument('--analyze', type=str, default=None,
+                        help='Path to an existing skip_stats CSV (or a directory containing skip_stats*.csv); '
+                             'skips computation and only runs the analysis on the loaded results')
+    args = parser.parse_args()
+
+    if args.analyze is not None:
+        df = load_existing_results(args.analyze)
+        run_analysis(df)
+        return
+
+    print("Loading TSB-AD benchmark...")
+    tsb = TSBADParser()
+    if args.test:
+        filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
+        filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]
+    else:
+        filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
+
+    all_detectors = tsb.get_detectors()
+    if args.detector is None:
+        selected = [all_detectors[0]]
+    elif args.detector == 'all':
+        selected = all_detectors
+    elif args.detector in all_detectors:
+        selected = [args.detector]
+    else:
+        raise ValueError(f"Unknown detector '{args.detector}'. Available: {all_detectors}")
+    print(f"Using detector(s): {selected}")
+
+    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=selected)
+    # Each scores_grouped[i] has shape (len(selected), T); emit one entry per
+    # (time series, detector) so every detector gets its own row.
+    data = [
+        (fname, label, score, det)
+        for fname, label, score_stack in zip(filenames, labels, scores_grouped)
+        for det, score in zip(selected, score_stack)
+    ]
+
+    save_path = None
+    if args.experiment is not None:
+        out_dir = os.path.join('experiments', args.experiment)
+        os.makedirs(out_dir, exist_ok=True)
+        detector_tag = args.detector if args.detector is not None else selected[0]
+        save_path = os.path.join(out_dir, f'skip_stats_{detector_tag}_{args.slope_size}.csv')
+
+    vus = VUSNumpy(
+        slope_size=args.slope_size,
+        step=1,
+        global_mask=True,
+        slopes='precomputed',
+        existence='optimized',
+        conf_matrix='dynamic_plus',
+    )
+
+    results = []
+    skipped_series = 0
+    for fname, label, score, det in tqdm(data, desc="Analyzing existence skips"):
+        # Guard: skip if label/score length mismatch
+        min_len = min(len(label), len(score))
+        label, score = label[:min_len], score[:min_len]
+
+        # Replicate the compute pipeline up to existence
+        ((_, _), (start_with_edges, end_with_edges)), _ = vus.get_anomalies_coordinates(label)
+        safe_mask, _ = vus.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=vus.global_mask)
+
+        # Apply global mask (same as in compute)
+        label_masked, score_masked = label[safe_mask], score[safe_mask]
+        if len(label_masked) == 0 or label_masked.sum() == 0:
+            skipped_series += 1
+            continue
+        ((start_no_edges, end_no_edges), (start_we, end_we)), _ = vus.get_anomalies_coordinates(label_masked)
+        if start_we.shape[0] == 0:
+            skipped_series += 1
+            continue
+        (pos_left, pos_right), _ = vus.distance_from_anomaly(label_masked, start_we, end_we)
+        labels_slopes, _ = vus.add_slopes(label_masked, start_no_edges, end_no_edges, pos_left, pos_right)
+        thresholds, _ = vus._dispatch_thresholds(label_masked, score_masked, labels_slopes, score_full=score)
+
+        # Run instrumented existence
+        stats = existence_optimized_instrumented(vus, labels_slopes, score_masked, thresholds, start_we, end_we)
+        stats['filename'] = fname
+        stats['detector'] = det
+        stats['T_original'] = len(label)
+        results.append(stats)
+
+        if save_path is not None:
+            df_row = pd.DataFrame([stats])
+            write_header = not os.path.exists(save_path)
+            df_row.to_csv(save_path, mode='a', header=write_header, index=False)
+
+    df = pd.DataFrame(results)
+    if save_path is not None:
+        print(f"\nResults saved to {save_path}")
+
+    if df.empty:
+        print(f"No results: all {skipped_series} series were skipped (no anomalies/data issues).")
+        return
+
+    run_analysis(df, skipped_series)
 
 
 if __name__ == '__main__':
