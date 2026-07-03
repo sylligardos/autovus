@@ -50,6 +50,13 @@ def natural_keys(text):
     return [atoi(c) for c in re.split(r'(\d+)', text)]
 
 
+# torch.argsort/sort raise "dimension being sorted can not have more than
+# INT_MAX elements" for tensors with more than 2**31 - 1 elements. The synthetic
+# sweep goes up to 2**31 points, so cap the length just under the limit; dropping
+# the tail 1-2 points is invisible on a log-scale scaling plot.
+TORCH_SORT_MAX = 2**31 - 1
+
+
 def load_synthetic(dataset, testing=False, iterator=False):
     dataset_path = os.path.join('data', 'synthetic', dataset)
     files = sorted(os.listdir(dataset_path), key=natural_keys)
@@ -58,6 +65,9 @@ def load_synthetic(dataset, testing=False, iterator=False):
         data  = np.load(os.path.join(dataset_path, file))
         label = data['label']
         score = data['score'].round(2)
+        if len(score) > TORCH_SORT_MAX:
+            label = label[:TORCH_SORT_MAX]
+            score = score[:TORCH_SORT_MAX]
         if iterator:
             yield (file, label, score)
         else:
