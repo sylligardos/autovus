@@ -11,6 +11,7 @@ import argparse
 import random
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 import torch
@@ -30,6 +31,8 @@ def main(plot):
         gpu_buffers_visualization()
     elif plot == 'gpu_existence':
         gpu_existence_visualization()
+    elif plot == 'gpu_existence_segmax':
+        gpu_existence_segmax_visualization()
     elif plot == 'steps':
         steps_visualization()
     elif plot == 'global_mask':
@@ -185,7 +188,186 @@ def gpu_existence_visualization():
     plt.savefig("experiments/figures/gpu_existence.pdf", bbox_inches="tight", pad_inches=0)
     plt.show()
 
-    
+
+def gpu_existence_segmax_visualization():
+    """
+    Step-by-step walkthrough of VUSTorch.compute_existence_segmax.
+
+    Instead of the cummax scan over (s, t, T) score_hat (see
+    gpu_existence_visualization), segmax reduces the score to ONE max per
+    region (threshold-independent), then counts per threshold how many
+    region-maxes clear it, via sort + searchsorted in (s, K) memory.
+    """
+    sns.set_style("whitegrid")
+    device = 'cpu'
+    ffvus = VUSTorch(slope_size=20, step=4, device=device)
+
+    # Toy series exercising every mechanism of the method:
+    #   A: strong peak inside            -> found at every threshold
+    #   B: moderate peak inside          -> found at mid thresholds; rescues C after the merge
+    #   C: no peak at all                -> missed alone, but MERGES with B once the slopes touch (b >= 8)
+    #   D: peak 6 points AFTER the end   -> found only once the buffer extends the region over it
+    T = 400
+    rng = np.random.default_rng(7)
+    regions = {'A': (60, 75), 'B': (150, 160), 'C': (176, 186), 'D': (300, 330)}
+    label = torch.zeros(T, dtype=torch.float32)
+    for start, end in regions.values():
+        label[start:end] = 1
+    score_np = rng.uniform(0.0, 0.15, T)
+    for center, height in [(67, 0.95), (154, 0.55), (336, 0.75)]:
+        bump = height * np.exp(-0.5 * ((np.arange(T) - center) / 6) ** 2)
+        np.maximum(score_np, bump, out=score_np)
+    score = torch.tensor(score_np, dtype=torch.float64)
+
+    # Same preprocessing compute() runs before the existence call
+    (_, (start_points, end_points)), _ = ffvus.get_anomalies_coordinates(label)
+    pos, _ = ffvus.distance_from_anomaly(label, start_points, end_points)
+    labels, _ = ffvus.add_slopes(label, pos)                 # (s, T) soft labels
+    buffers = ffvus.slope_values.numpy()
+    thresholds = torch.linspace(1.0, 0.0, 41, dtype=torch.float64)
+    highlight = [0.9, 0.6, 0.3]
+    thresh_colors = {0.9: '#a50f15', 0.6: '#de2d26', 0.3: '#fb6a4a'}
+    # Okabe-Ito subset (CVD-safe), fixed order, one per region id
+    region_colors = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00']
+
+    # --- Replicate the internals, keeping every intermediate ---
+    # Region grouping: identical stairs trick as compute_existence, so the
+    # merge behaviour is preserved exactly.
+    s = labels.shape[0]
+    t = thresholds.shape[0]
+    norm_labels = (labels > 0).int()
+    diff = torch.diff(norm_labels, dim=1, prepend=torch.zeros((s, 1), device=device))
+    diff = torch.clamp(diff, min=0, max=1)
+    stairs = torch.cumsum(diff, dim=1)
+    labels_stairs = norm_labels * stairs                     # (s, T), 0 = non-anomaly
+    total_anomalies = stairs[:, -1][:, None]
+
+    # Per-region max score: ONE scatter-amax, no threshold axis at all.
+    # Empty bins (rows whose regions merged below K) stay -inf.
+    K = int(labels_stairs.max().item())
+    seg_max = torch.full((s, K + 1), float('-inf'), device=device, dtype=score.dtype)
+    seg_max.scatter_reduce_(1, labels_stairs.long(), score[None, :].expand(s, T),
+                            reduce='amax', include_self=True)
+    seg_max = seg_max[:, 1:]                                 # (s, K)
+
+    # Counting without the (s, K, t) comparison: sort ascending, then
+    # searchsorted gives per threshold the number of maxes strictly below it;
+    # found = K - below (-inf bins always count as below, so merged rows stay correct).
+    sorted_seg, _ = torch.sort(seg_max, dim=1)
+    below = torch.searchsorted(sorted_seg, thresholds[None, :].expand(s, t).contiguous(), right=False)
+    existence = (K - below).to(torch.float32) / total_anomalies
+
+    # Sanity: replica == real method == old cummax formulation
+    segmax_result, _ = ffvus.compute_existence_segmax(labels, score, thresholds)
+    score_mask, _ = ffvus.get_score_mask(score, thresholds)
+    cummax_result, _ = ffvus.compute_existence(labels, score_mask)
+    print(f"max |replica - compute_existence_segmax| = {(existence - segmax_result).abs().max():.2e}")
+    print(f"max |segmax  - compute_existence(cummax)| = {(segmax_result - cummax_result).abs().max():.2e}")
+
+    stairs_np = labels_stairs.numpy()
+    seg_max_np = seg_max.numpy()
+    focus_rows = [0, s // 2, s - 1]
+
+    fig = plt.figure(figsize=(14, 17))
+    gs = GridSpec(6, 2, figure=fig, height_ratios=[1.1, 0.9, 0.8, 0.8, 0.8, 1.2],
+                  hspace=0.65, wspace=0.25)
+
+    # (a) Inputs
+    ax = fig.add_subplot(gs[0, :])
+    ax.plot(score_np, color='#4d4d4d', lw=1.2)
+    for name, (start, end) in regions.items():
+        ax.axvspan(start, end, color='#bbbbbb', alpha=0.45)
+        ax.text((start + end) / 2, 1.04, name, ha='center', fontsize=10, fontweight='bold')
+    for th in highlight:
+        ax.axhline(th, color=thresh_colors[th], ls='--', lw=1)
+        ax.text(T + 2, th, f'θ={th}', color=thresh_colors[th], fontsize=8, va='center')
+    ax.set_xlim(0, T + 25)
+    ax.set_ylim(0, 1.12)
+    ax.set_title('(a) Inputs: score (line), anomaly regions (grey), thresholds (dashed).\n'
+                 'A: strong peak · B: moderate peak · C: no peak · D: peak 6 pts AFTER the region', fontsize=10)
+
+    # (b) labels_stairs heatmap: region id per (slope, time) cell
+    ax = fig.add_subplot(gs[1, :])
+    cmap = mcolors.ListedColormap(['#ffffff'] + region_colors[:K])
+    norm = mcolors.BoundaryNorm(np.arange(K + 2) - 0.5, cmap.N)
+    ax.imshow(stairs_np, aspect='auto', interpolation='nearest', cmap=cmap, norm=norm,
+              extent=[0, T, s - 0.5, -0.5])
+    ax.set_yticks(range(s))
+    ax.set_yticklabels([f'b={b}' for b in buffers])
+    for row in range(s):
+        for rid in np.unique(stairs_np[row]):
+            if rid > 0:
+                span = np.where(stairs_np[row] == rid)[0]
+                ax.text(span.mean(), row, str(int(rid)), ha='center', va='center',
+                        fontsize=8, color='white', fontweight='bold')
+    ax.set_title('(b) labels_stairs = norm_labels * cumsum(rising edges): region id per (slope, time) cell.\n'
+                 'Larger buffers widen regions; B and C touch at b≥8 and MERGE into one region (id 2)', fontsize=10)
+
+    # (c-e) seg_max for three slope rows
+    for i, row in enumerate(focus_rows):
+        ax = fig.add_subplot(gs[2 + i, :])
+        ax.plot(score_np, color='#4d4d4d', lw=0.8, alpha=0.5)
+        found_at = {th: 0 for th in highlight}
+        for rid in range(1, K + 1):
+            span = np.where(stairs_np[row] == rid)[0]
+            if span.size == 0:
+                continue
+            m = seg_max_np[row, rid - 1]
+            color = region_colors[rid - 1]
+            ax.axvspan(span[0], span[-1] + 1, color=color, alpha=0.18)
+            ax.hlines(m, span[0], span[-1] + 1, color=color, lw=2.5)
+            ax.text(span.mean(), m + 0.03, f'{m:.2f}', ha='center', fontsize=8, color=color)
+            for th in highlight:
+                found_at[th] += int(m >= th)
+        for th in highlight:
+            ax.axhline(th, color=thresh_colors[th], ls='--', lw=0.8, alpha=0.8)
+        total = int(total_anomalies[row])
+        counts = ',  '.join(f'θ={th}: {found_at[th]}/{total}' for th in highlight)
+        ax.set_title(f'({chr(99 + i)}) seg_max at b={buffers[row]}  ({total} regions) — found: {counts}', fontsize=10)
+        ax.set_xlim(0, T + 25)
+        ax.set_ylim(0, 1.05)
+
+    # (f) The searchsorted trick on the last slope row
+    ax = fig.add_subplot(gs[5, 0])
+    row = s - 1
+    sorted_row = sorted_seg[row].numpy()
+    xs = np.arange(1, K + 1)
+    for x, v in zip(xs, sorted_row):
+        if np.isinf(v):
+            ax.bar(x, 0.04, bottom=-0.12, color='#999999', width=0.55)
+            ax.text(x, -0.14, '-inf\n(empty bin)', ha='center', va='top', fontsize=8)
+        else:
+            ax.bar(x, v, color='#4d4d4d', width=0.55)
+            ax.text(x, v + 0.02, f'{v:.2f}', ha='center', va='bottom', fontsize=8)
+    for th in highlight:
+        ax.axhline(th, color=thresh_colors[th], ls='--', lw=1)
+        n_below = int(np.sum(sorted_row < th))
+        ax.text(K + 0.45, th + 0.01, f'θ={th}: below={n_below} → found=K−below={K - n_below}',
+                color=thresh_colors[th], fontsize=8)
+    ax.set_xlim(0.4, K + 3.2)
+    ax.set_ylim(-0.25, 1.05)
+    ax.set_xticks(xs)
+    ax.set_xlabel('sorted position')
+    ax.set_title(f'(f) searchsorted trick at b={buffers[row]}: sort seg_max ascending,\n'
+                 'count entries < θ; -inf pads rows that merged below K', fontsize=10)
+
+    # (g) Resulting existence surface
+    ax = fig.add_subplot(gs[5, 1])
+    im = ax.imshow(existence.numpy(), aspect='auto', interpolation='nearest',
+                   cmap='Blues', vmin=0, vmax=1,
+                   extent=[thresholds[0].item(), thresholds[-1].item(), s - 0.5, -0.5])
+    ax.set_yticks(range(s))
+    ax.set_yticklabels([f'b={b}' for b in buffers])
+    ax.set_xlabel('threshold θ (descending)')
+    ax.set_title('(g) Existence surface: n_found / total_anomalies per (slope, θ).\n'
+                 'Steps up as θ drops below each seg_max; pattern shifts at b≥8 (merge + late D)', fontsize=10)
+    fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+
+    fig.suptitle('compute_existence_segmax, step by step', fontsize=13, y=0.995)
+    plt.savefig("experiments/figures/gpu_existence_segmax.pdf", bbox_inches="tight", pad_inches=0)
+    plt.show()
+
+
 def gpu_buffers_visualization():
     sns.set_style("whitegrid")
     buffer_size = 100
@@ -530,7 +712,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--plot',
         type=str,
-        choices=['existence_seq', 'conf_matrix', 'gpu_buffers', 'gpu_existence', 'steps', 'global_mask', 'progressive_vus'],
+        choices=['existence_seq', 'conf_matrix', 'gpu_buffers', 'gpu_existence', 'gpu_existence_segmax', 'steps', 'global_mask', 'progressive_vus'],
         default='existence_seq',
         help='Type of plot to generate'
     )
