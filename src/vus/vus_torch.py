@@ -163,6 +163,7 @@ class VUSTorch():
         ((_), (start_with_edges, end_with_edges)), time_anomalies_coord = self.get_anomalies_coordinates(label)
         safe_mask, time_safe_mask = self.create_safe_mask(label, start_with_edges, end_with_edges, extra_safe=self.global_mask)
         thresholds, time_thresholds = self._dispatch_thresholds(label, score, safe_mask)
+        n_thresholds = thresholds.shape[0]
 
         # Apply global mask
         if self.global_mask:
@@ -175,7 +176,6 @@ class VUSTorch():
             # silently overflows VRAM for the AUC variant (uncapped thresholds,
             # tens of thousands on long series). Size the chunk from the actual
             # threshold count instead.
-            n_thresholds = thresholds.shape[0]
             chunk_len = max(1, int(self.max_memory_tokens // max(1, n_thresholds)))
             n_extra_chunks = (nonmask_score.shape[0] + chunk_len - 1) // chunk_len
             for start in tqdm(range(0, nonmask_score.shape[0], chunk_len),

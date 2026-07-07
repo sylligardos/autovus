@@ -2,10 +2,12 @@
 Ablation study for FF-VUS optimizations.
 
 Incrementally enables each optimization and measures its effect on overall runtime.
-Runs on the full TSB-UAD benchmark with a single detector.
+Runs on the full TSB-AD benchmark. By default it uses the first detector; use
+--detector to pick another, 'all' detectors, or a 'random' detector per series.
 
 Usage:
-    python src/ablation_study.py                    # Full TSB-UAD
+    python src/ablation_study.py                     # Full TSB-AD, first detector
+    python src/ablation_study.py --detector all      # Every detector
     python src/ablation_study.py --test              # Quick test (10 time series)
     python src/ablation_study.py --test --cpu_only   # CPU-only quick test
     python src/ablation_study.py --test --gpu_only   # GPU-only quick test
@@ -13,9 +15,13 @@ Usage:
 
 import argparse
 import os
+import random
 import time
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")  # headless: never pop up a window
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -41,6 +47,11 @@ def _analyze_label(label):
     lengths = (ends + 1) - starts
     return len(label), n, float(np.mean(lengths))
 
+
+# Number of thresholds used by both the CPU (VUSNumpy) and GPU (VUSTorch)
+# implementations. Overrides their default of 2000 to keep the ablation
+# comparable and fast.
+MAX_THRESHOLDS = 250
 
 # ---------------------------------------------------------------------------
 # Ablation configurations
@@ -246,7 +257,218 @@ def run_single_config(vus_obj, filenames, labels, scores, backend, config_name):
     return rows
 
 
-def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, run_gpu, save_dir):
+# ---------------------------------------------------------------------------
+# Summary / analysis
+# ---------------------------------------------------------------------------
+
+def summarize_results(df):
+    """Aggregate per-time-series results into a per-config summary with speedups."""
+    summary = (
+        df.groupby(["Backend", "Config"])
+        .agg(
+            total_time=("Total time (s)", "sum"),
+            mean_time=("Total time (s)", "mean"),
+            mean_metric=("Metric value", "mean"),
+            n_series=("Time series", "count"),
+        )
+        .reset_index()
+    )
+
+    # Compute speedup relative to Original VUS
+    original_time = summary.loc[summary["Config"] == "Original VUS", "total_time"]
+    original_time = original_time.values[0] if len(original_time) > 0 else None
+    summary["speedup"] = summary.apply(
+        lambda r: original_time / r["total_time"]
+        if original_time is not None and r["total_time"] > 0 else float("nan"),
+        axis=1,
+    )
+    summary = summary.sort_values(["Backend", "total_time"], ascending=[True, False])
+    return summary
+
+
+def print_summary(summary):
+    """Print the ablation summary table plus the per-step incremental analysis."""
+    print("\n" + "=" * 100)
+    print("ABLATION SUMMARY")
+    print("=" * 100)
+    print(f"{'Backend':<6} {'Config':<50} {'Total (s)':>10} {'Speedup':>8} {'Mean metric':>12}")
+    print("-" * 100)
+    for _, row in summary.iterrows():
+        print(f"{row['Backend']:<6} {row['Config']:<50} {row['total_time']:>10.2f} "
+              f"{row['speedup']:>7.1f}x {row['mean_metric']:>12.6f}")
+    print("=" * 100)
+
+    # ---- Incremental analysis: marginal contribution of each optimization ----
+    # Within each backend, configs are added one optimization at a time. Order
+    # them fastest-last (slowest-first) and report the step-over-step speedup so
+    # the contribution of each optimization is visible.
+    print("\nINCREMENTAL CONTRIBUTION (step-over-step, within each backend)")
+    print("-" * 100)
+    for backend in summary["Backend"].unique():
+        sub = summary[summary["Backend"] == backend].sort_values(
+            "total_time", ascending=False).reset_index(drop=True)
+        print(f"\n[{backend}]")
+        prev_time = None
+        for _, row in sub.iterrows():
+            if prev_time is not None and row["total_time"] > 0:
+                step = prev_time / row["total_time"]
+                marker = f"x{step:5.2f} vs prev"
+            else:
+                marker = "     (reference)"
+            print(f"  {row['Config']:<50} {row['total_time']:>10.2f}s  {marker}")
+            prev_time = row["total_time"]
+    print("=" * 100)
+
+
+# The ablation is a single incremental path. The CPU was the design playground
+# where every step had a trivial baseline built for comparison; the GPU port was
+# written once, on top of the fully-optimized CPU version, so it is not a
+# per-step ablation but the final step of the same progression. We therefore
+# render one continuous staircase: Original VUS -> ... -> AutoVUS (CPU) -> AutoVUS (GPU).
+CPU_PLOT_ORDER = ["Original VUS"] + [c["name"] for c in CPU_CONFIGS]
+# The fully-optimized GPU config (all optimizations, step=1) is the terminal bar.
+GPU_FINAL_CONFIG = "+ Global mask (FF-VUS-GPU step=1)"
+
+# Short labels for the x-axis (the full config names are too long to read).
+# Display names use "AutoVUS"; the CSV "Config" keys keep their original strings.
+SHORT_LABELS = {
+    "Original VUS": "Original\nVUS",
+    "Baseline (no optimizations)": "Baseline",
+    "+ Precomputed slopes": "+ Precomp.\nslopes",
+    "+ Optimized existence": "+ Optimized\nexistence",
+    "+ Dynamic confusion matrix": "+ Dynamic\nconf.",
+    "+ Dynamic+ confusion matrix": "+ Dynamic+\nconf.",
+    "+ Global mask (FF-VUS)": "+ Global mask\n(AutoVUS)",
+    GPU_FINAL_CONFIG: "+ GPU\n(AutoVUS-GPU)",
+}
+
+
+def build_ablation_path(summary):
+    """Return the ordered (config, backend, total_time, speedup) staircase.
+
+    The CPU incremental configs come first, followed by the fully-optimized GPU
+    config as the terminal step. Speedups are recomputed relative to Original VUS
+    so the whole path shares one reference.
+    """
+    cpu = summary[summary["Backend"] == "CPU"].set_index("Config")
+    gpu = summary[summary["Backend"] == "GPU"].set_index("Config")
+
+    path = []
+    for cfg in CPU_PLOT_ORDER:
+        if cfg in cpu.index:
+            path.append((cfg, "CPU", float(cpu.loc[cfg, "total_time"])))
+    if GPU_FINAL_CONFIG in gpu.index:
+        path.append((GPU_FINAL_CONFIG, "GPU", float(gpu.loc[GPU_FINAL_CONFIG, "total_time"])))
+
+    ref = next((t for c, b, t in path if c == "Original VUS"), None)
+    return [(c, b, t, (ref / t if ref and t > 0 else float("nan"))) for c, b, t in path]
+
+
+def plot_ablation(summary, save_path):
+    """Render the incremental ablation as a single log-scale staircase.
+
+    CPU steps are shaded blue (light -> dark); the terminal GPU step is a
+    distinct green to mark the switch to the parallel backend.
+    """
+    path = build_ablation_path(summary)
+    if not path:
+        return None
+
+    configs = [c for c, _, _, _ in path]
+    backends = [b for _, b, _, _ in path]
+    times = [t for _, _, t, _ in path]
+    speedups = [s for _, _, _, s in path]
+    x = np.arange(len(configs))
+
+    n_cpu = sum(b == "CPU" for b in backends)
+    colors = []
+    for i, b in enumerate(backends):
+        if b == "CPU":
+            colors.append(plt.cm.Blues(0.30 + 0.60 * i / max(1, n_cpu - 1)))
+        else:
+            colors.append(plt.cm.Greens(0.80))
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.6))
+    ax.bar(x, times, width=0.72, color=colors, zorder=3)
+    ax.set_yscale("log")
+    ax.set_ylim(bottom=min(times) / 3, top=max(times) * 3)
+
+    # Cumulative-speedup label above each bar.
+    for xi, t, sp in zip(x, times, speedups):
+        label = "1x" if abs(sp - 1.0) < 1e-9 else f"{sp:.0f}x"
+        ax.annotate(label, (xi, t), textcoords="offset points", xytext=(0, 4),
+                    ha="center", va="bottom", fontsize=9, fontweight="bold",
+                    color="#1a1a1a")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([SHORT_LABELS.get(c, c) for c in configs], fontsize=8)
+    ax.set_ylabel("Total time over benchmark (s, log)", fontsize=9)
+    ax.grid(axis="y", which="both", color="#e6e6e6", linewidth=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+
+    n_series = int(summary["n_series"].max())
+    ax.set_title(
+        f"AutoVUS ablation on TSB-AD ({n_series} time series x detector pairs)",
+        fontsize=12, fontweight="bold",
+    )
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    fig.savefig(save_path.replace(".png", ".pdf"), bbox_inches="tight")
+    plt.close(fig)
+    print(f"Figure saved to {save_path} (and .pdf)")
+    return save_path
+
+
+def print_ablation_table(summary):
+    """Print the ablation path (same order/steps as the figure) as a markdown
+    table styled like the rebuttal: Backend | Configuration | Total Time (s) |
+    Mean Time (s) | Mean Metric | #Series | Speed-up."""
+    path = build_ablation_path(summary)
+    if not path:
+        return
+    lut = summary.set_index(["Backend", "Config"])
+    header = ["Backend", "Configuration", "Total Time (s)", "Mean Time (s)",
+              "Mean Metric", "#Series", "Speed-up"]
+
+    print("\n" + "=" * 100)
+    print("ABLATION TABLE (figure path)")
+    print("=" * 100)
+    print("| " + " | ".join(header) + " |")
+    print("|" + "|".join(["---"] * len(header)) + "|")
+    for cfg, backend, total_time, speedup in path:
+        row = lut.loc[(backend, cfg)]
+        name = SHORT_LABELS.get(cfg, cfg).replace("\n", " ")
+        print(f"| {backend} | {name} | {total_time:.4f} | {row['mean_time']:.4f} | "
+              f"{row['mean_metric']:.4f} | {int(row['n_series'])} | {speedup:.2f}x |")
+    print("=" * 100)
+
+
+def analyze_results_file(path):
+    """Load a saved per-time-series results CSV and print the summary + analysis."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Results file not found: {path}")
+    df = pd.read_csv(path)
+    print(f"Analyzing {path}")
+    print(f"Rows: {len(df)}  |  Configs: {df['Config'].nunique()}  |  "
+          f"Time series: {df['Time series'].nunique()}")
+    summary = summarize_results(df)
+    print_summary(summary)
+    print_ablation_table(summary)
+
+    # Save the ablation figure next to the results file, under a figures/ dir.
+    results_dir = os.path.dirname(os.path.abspath(path))
+    fig_dir = os.path.join(os.path.dirname(results_dir), "figures")
+    base = os.path.splitext(os.path.basename(path))[0]  # e.g. ablation_full_<ts>
+    fig_path = os.path.join(fig_dir, f"{base}.png")
+    plot_ablation(summary, fig_path)
+    return summary
+
+
+def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, run_gpu, save_dir, mode="full"):
     """Run the full ablation study."""
     all_rows = []
 
@@ -269,7 +491,8 @@ def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, r
         print("=" * 70)
 
         for cfg in CPU_CONFIGS:
-            kwargs = {**cfg["kwargs"], "slope_size": slope_size, "step": step_default}
+            kwargs = {**cfg["kwargs"], "slope_size": slope_size, "step": step_default,
+                      "max_thresholds": MAX_THRESHOLDS}
             vus = VUSNumpy(**kwargs)
             rows = run_single_config(vus, filenames, labels, scores, "cpu", cfg["name"])
             all_rows.extend(rows)
@@ -292,7 +515,8 @@ def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, r
 
         for cfg in gpu_all_configs:
             step = cfg.get("step", step_default)
-            kwargs = {**cfg["kwargs"], "slope_size": slope_size, "step": step, "device": device}
+            kwargs = {**cfg["kwargs"], "slope_size": slope_size, "step": step, "device": device,
+                      "max_thresholds": MAX_THRESHOLDS}
             vus = VUSTorch(**kwargs)
             rows = run_single_config(vus, filenames, labels, scores, "gpu", cfg["name"])
             all_rows.extend(rows)
@@ -311,46 +535,19 @@ def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, r
     os.makedirs(info_path, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = os.path.join(results_path, f"ablation_{timestamp}.csv")
+    tag = f"{mode}_{timestamp}"
+    results_file = os.path.join(results_path, f"ablation_{tag}.csv")
     df.to_csv(results_file, index=False)
     print(f"\nPer-time-series results saved to {results_file}")
 
     # ---- Summary ----
-    summary = (
-        df.groupby(["Backend", "Config"])
-        .agg(
-            total_time=("Total time (s)", "sum"),
-            mean_time=("Total time (s)", "mean"),
-            mean_metric=("Metric value", "mean"),
-            n_series=("Time series", "count"),
-        )
-        .reset_index()
-    )
+    summary = summarize_results(df)
 
-    # Compute speedup relative to Original VUS
-    original_time = summary.loc[summary["Config"] == "Original VUS", "total_time"]
-    original_time = original_time.values[0] if len(original_time) > 0 else None
-    summary["speedup"] = summary.apply(
-        lambda r: original_time / r["total_time"]
-        if original_time is not None and r["total_time"] > 0 else float("nan"),
-        axis=1,
-    )
-    summary = summary.sort_values(["Backend", "total_time"], ascending=[True, False])
-
-    summary_file = os.path.join(results_path, f"ablation_summary_{timestamp}.csv")
+    summary_file = os.path.join(results_path, f"ablation_summary_{tag}.csv")
     summary.to_csv(summary_file, index=False)
     print(f"Summary saved to {summary_file}")
 
-    # ---- Print summary ----
-    print("\n" + "=" * 100)
-    print("ABLATION SUMMARY")
-    print("=" * 100)
-    print(f"{'Backend':<6} {'Config':<50} {'Total (s)':>10} {'Speedup':>8} {'Mean metric':>12}")
-    print("-" * 100)
-    for _, row in summary.iterrows():
-        print(f"{row['Backend']:<6} {row['Config']:<50} {row['total_time']:>10.2f} "
-              f"{row['speedup']:>7.1f}x {row['mean_metric']:>12.6f}")
-    print("=" * 100)
+    print_summary(summary)
 
     # ---- Save system info ----
     info = {
@@ -364,10 +561,11 @@ def run_ablation(filenames, labels, scores, slope_size, step_default, run_cpu, r
         "Slope size": slope_size,
         "Step (default)": step_default,
         "N time series": len(filenames),
+        "Mode": mode,
         "Timestamp": timestamp,
     }
     info_df = pd.DataFrame([info])
-    info_file = os.path.join(info_path, f"ablation_info_{timestamp}.csv")
+    info_file = os.path.join(info_path, f"ablation_info_{tag}.csv")
     info_df.to_csv(info_file, index=False)
     print(f"System info saved to {info_file}")
 
@@ -385,13 +583,24 @@ def main():
     parser.add_argument("--test", action="store_true", help="Quick test mode (10 time series from KDD21)")
     parser.add_argument("--cpu_only", action="store_true", help="Run only CPU ablation")
     parser.add_argument("--gpu_only", action="store_true", help="Run only GPU ablation")
+    parser.add_argument("--detector", type=str, default=None,
+                        help="TSB detector to use: a detector name, 'random' (a random detector "
+                             "per time series), or 'all' (every detector). Default: first detector")
     parser.add_argument("--experiment", type=str, default="ablation_study",
                         help="Experiment subdirectory under experiments/ (default: ablation_study)")
+    parser.add_argument("--analyze", type=str, default=None, metavar="RESULTS_CSV",
+                        help="Analyze an existing per-time-series results CSV and print the "
+                             "summary + analysis instead of running the ablation")
     args = parser.parse_args()
 
     # Ensure paths are relative to the project root
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_root)
+
+    # Analysis-only mode: load an existing results file and print the summary.
+    if args.analyze:
+        analyze_results_file(args.analyze)
+        return
 
     run_cpu = not args.gpu_only
     run_gpu = not args.cpu_only
@@ -405,12 +614,42 @@ def main():
     else:
         filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
     detectors = tsb.get_detectors()
-    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=detectors[:1])
-    scores = [s[0] for s in scores_grouped]
-    print(f"Loaded {len(filenames)} time series")
+    # 'random' loads every detector then picks one per time series, so the
+    # parser must load all of them (same cost as 'all').
+    per_series_random = args.detector == 'random'
+    if args.detector is None:
+        selected = [detectors[0]]
+    elif args.detector == 'all' or per_series_random:
+        selected = detectors
+    elif args.detector in detectors:
+        selected = [args.detector]
+    else:
+        raise ValueError(f"Unknown detector '{args.detector}'. Available: {detectors}")
+    print(f"Using detector(s): {'random per series, drawn from all' if per_series_random else selected}")
+
+    scores_grouped, _ = tsb.load_scores_and_delete(filenames, timeseries, labels, detectors=selected)
+    # Each scores_grouped[i] has shape (len(selected), T). Expand the parallel
+    # (filename, label, score) lists to one entry per (time series, detector) so
+    # the ablation runner sees every pair transparently.
+    exp_filenames, exp_labels, scores = [], [], []
+    for fname, label, score_stack in zip(filenames, labels, scores_grouped):
+        if per_series_random:
+            i = random.randrange(len(selected))
+            exp_filenames.append(fname)
+            exp_labels.append(label)
+            scores.append(score_stack[i])
+        else:
+            for score in score_stack:
+                exp_filenames.append(fname)
+                exp_labels.append(label)
+                scores.append(score)
+    filenames, labels = exp_filenames, exp_labels
+    print(f"Loaded {len(filenames)} (time series, detector) pairs "
+          f"from {len(selected)} detector(s)")
 
     save_dir = os.path.join("experiments", args.experiment)
-    run_ablation(filenames, labels, scores, args.slope_size, args.step, run_cpu, run_gpu, save_dir)
+    mode = "test" if args.test else "full"
+    run_ablation(filenames, labels, scores, args.slope_size, args.step, run_cpu, run_gpu, save_dir, mode=mode)
 
 
 if __name__ == "__main__":

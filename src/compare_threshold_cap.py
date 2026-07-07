@@ -63,7 +63,8 @@ TORCH_PAIRS = [
     ('pr_relevant_fuzzy', 1000),
 ]
 
-OUTPUT_DIR = os.path.join('experiments', 'compare_threshold_cap')
+OUTPUT_DIR  = os.path.join('experiments', 'compare_threshold_cap')
+RESULTS_DIR = os.path.join(OUTPUT_DIR, 'results')
 
 CSV_COLUMNS = [
     'filename', 'dataset', 'T', 'anomaly_rate', 'n_anomalies', 'n_unique_scores_full',
@@ -113,14 +114,14 @@ def _select_series(fnames, labels, n_per_stratum):
 
 def _output_csv(dataset=None):
     if dataset is not None:
-        return os.path.join(OUTPUT_DIR, f'results_{dataset}.csv')
-    return os.path.join(OUTPUT_DIR, 'results.csv')
+        return os.path.join(RESULTS_DIR, f'results_{dataset}.csv')
+    return os.path.join(RESULTS_DIR, 'results.csv')
 
 
 def _load_all_results():
     """Load all results_*.csv (per-dataset) plus results.csv (local run) if present."""
     import glob
-    files = sorted(glob.glob(os.path.join(OUTPUT_DIR, 'results*.csv')))
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, 'results*.csv')))
     if not files:
         return pd.DataFrame()
     dfs = []
@@ -384,7 +385,7 @@ def main():
         return
 
     output_csv = _output_csv(args.dataset)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     if args.force and os.path.exists(output_csv):
         os.remove(output_csv)
         print(f"Removed {output_csv}")
