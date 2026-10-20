@@ -60,7 +60,8 @@ class FastVUS:
 
         self.buffers = np.arange(0, L + 1, step) if L > 0 else np.array([0])
         self.n_buffers = len(self.buffers)
-        self.timings = {}   # seconds per step, filled by compute()
+        self.timings = {}      # seconds per step, filled by compute()
+        self.label_mass = None  # sum of the buffered label per buffer, from the last compute()
 
     # ------------------------------------------------------------------
     # Step 1: anomaly coordinates
@@ -153,8 +154,8 @@ class FastVUS:
         b_eff = b if cap is None else np.minimum(b, cap[None, :])
         reached = (b_eff >= d) & (b_eff > 0)
         with np.errstate(divide='ignore', invalid='ignore'):
-            ramp = np.sqrt(1.0 - (1.0 - self.zita ** 2) * d / b_eff)
-        np.copyto(out, ramp, where=reached)
+            coef = (1.0 - self.zita ** 2) / b_eff
+            np.sqrt(1.0 - coef * d, out=out, where=reached)
         return out
 
     @timed
@@ -381,6 +382,9 @@ class FastVUS:
         Returns:
             float, or with cumulative=True an array with one VUS-PR per
             buffer length in self.buffers. Step times are in self.timings.
+            self.label_mass holds the sum of the buffered label per buffer:
+            label_mass[i] / T is the expected AUC-PR of a random detector at
+            buffer self.buffers[i], which AutoVUS uses as its baseline.
         """
         if (cap_left is None) != (cap_right is None):
             raise ValueError("pass both cap_left and cap_right, or neither")
@@ -399,6 +403,8 @@ class FastVUS:
         if cap_left is not None:
             cap_left, cap_right = self.per_point_caps(label, start, end, cap_left, cap_right)
         buffered = self.buffered_labels(label, dist_left, dist_right, cap_left, cap_right)
+
+        self.label_mass = buffered.sum(axis=1)
 
         thresholds = self.thresholds(buffered, score)
         score_mask = self.score_mask(score, thresholds)

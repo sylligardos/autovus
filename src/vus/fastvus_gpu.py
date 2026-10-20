@@ -76,6 +76,7 @@ class FastVUSGPU:
         self.buffers = torch.tensor(buffers, device=self.device)
         self.n_buffers = len(buffers)
         self.timings = {}
+        self.label_mass = None       # sum of the buffered label per buffer, from the last compute() (numpy)
         self.memory_budget = None    # bytes one chunk may use, set per compute()
         self._warm_up()
 
@@ -177,8 +178,8 @@ class FastVUSGPU:
         d = dist[None, :]
         b_eff = b if cap is None else torch.minimum(b, cap[None, :])
         reached = (b_eff >= d) & (b_eff > 0)
-        ramp = torch.sqrt(1.0 - (1.0 - self.zita ** 2) * d / b_eff)
-        return torch.where(reached, ramp, 0.0)
+        coef = (1.0 - self.zita ** 2) / b_eff
+        return torch.where(reached, torch.sqrt(1.0 - coef * d), 0.0)
 
     @timed
     def buffered_labels(self, label, dist_left, dist_right, cap_left=None, cap_right=None):
@@ -363,7 +364,8 @@ class FastVUSGPU:
         """VUS-PR of a score against a binary label; same interface as FastVUS.compute.
 
         Returns a float, or with cumulative=True a numpy array with one VUS-PR
-        per buffer length in self.buffers.
+        per buffer length in self.buffers. See FastVUS.compute for timings
+        and label_mass.
         """
         if (cap_left is None) != (cap_right is None):
             raise ValueError("pass both cap_left and cap_right, or neither")
@@ -390,11 +392,13 @@ class FastVUSGPU:
             fp_outside = self.false_positives_outside(score_outside, thresholds)
 
         tp = fp = positives = found = total = 0
+        label_mass = 0
         prev = 0
         for bound in self.chunk_bounds(label, mask, len(thresholds), start.numel()):
             label_c, score_c = label[prev:bound], score[prev:bound]
             caps_c = (None, None) if cap_left is None else (cap_left[prev:bound], cap_right[prev:bound])
             buffered = self.buffered_labels(label_c, dist_left[prev:bound], dist_right[prev:bound], *caps_c)
+            label_mass = label_mass + buffered.sum(dim=1, dtype=torch.float64)
             score_mask = self.score_mask(score_c, thresholds)
             tp_c, fp_c, positives_c = self.confusion_matrix(buffered, score_mask)
             found_c, total_c = self.existence(buffered, score_c, thresholds)
@@ -402,6 +406,7 @@ class FastVUSGPU:
             found, total = found + found_c, total + total_c
             prev = bound
 
+        self.label_mass = label_mass.cpu().numpy()
         if self.global_mask:
             fp = fp + fp_outside
         precision, recall = self.precision_recall(tp, fp, positives, found / total)

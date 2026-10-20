@@ -72,7 +72,7 @@ dependencies:
     - charset-normalizer==3.4.7
     # ── data / serialisation ───────────────────────────────────────────────
     - pyarrow==24.0.0
-    - fsspec==2025.3.0
+    - fsspec==2026.9.0
     - filelock==3.17.0
     - networkx==3.4.2
     - sympy==1.14.0
