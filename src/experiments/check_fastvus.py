@@ -119,9 +119,16 @@ def check_steps_vs_old():
     r.append(check('distance from anomaly',
                    lambda l, s: dists(l),
                    lambda l, s: plain(old.distance_from_anomaly)(l, *coords(l))))
-    r.append(check('per-point caps',
+    def caps_brute(l):
+        """Left cap of the anomaly whose start is nearest ahead, right cap of the one whose end is nearest behind."""
+        start, end = coords(l); cl, cr = caps(l)
+        left = np.array([cl[np.argmax(start >= t)] if (start >= t).any() else cl[-1] for t in range(len(l))], float)
+        right = np.array([cr[len(end) - 1 - np.argmax((end <= t)[::-1])] if (end <= t).any() else cr[0] for t in range(len(l))], float)
+        return left, right
+
+    r.append(check('per-point caps (anomaly ahead / behind rule, brute force)',
                    lambda l, s: new.per_point_caps(l, *coords(l), *caps(l)),
-                   lambda l, s: plain(old._per_point_cap)(l, *coords(l), *caps(l))))
+                   lambda l, s: caps_brute(l)))
     r.append(check('thresholds',
                    lambda l, s: thr(l, s),
                    lambda l, s: plain(old.get_pr_relevant_thresholds_vus)(buffered(l), s, max_thresholds=old.max_thresholds)))

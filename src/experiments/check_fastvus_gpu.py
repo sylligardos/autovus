@@ -72,13 +72,12 @@ def check_device(device):
         n = len(cpu.anomaly_coordinates(l)[1][0])
         cl, cr = rng.integers(0, L + 1, n), rng.integers(0, L + 1, n)
         pairs[c] = (cpu.compute(l, s, cl, cr), gpu.compute(l, s, cl, cr))
-    print('  info (not counted): the old CPU existence ignores side and caps, the GPU one follows the buffered label')
-    report('    compute with caps vs FastVUS, non-overlapping cases', pairs, 1e-6)
+    r.append(report('compute with caps vs FastVUS, non-overlapping cases', pairs, 1e-6))
     for side in ('left', 'right'):
         a = FastVUS(L=L, step=STEP, max_thresholds=None, side=side)
         b = FastVUSGPU(L=L, step=STEP, max_thresholds=None, device=device, side=side)
-        report(f'    compute (side {side}) vs FastVUS, non-overlapping cases',
-               {c: (a.compute(l, s), b.compute(l, s)) for c, (l, s) in cases.items() if no_overlap(l)}, 1e-6)
+        r.append(report(f'compute (side {side}) vs FastVUS, non-overlapping cases',
+                        {c: (a.compute(l, s), b.compute(l, s)) for c, (l, s) in cases.items() if no_overlap(l)}, 1e-6))
 
     # Chunking: a tiny memory budget forces many chunks; the result must not move.
     whole = {c: gpu.compute(l, s) for c, (l, s) in cases.items()}

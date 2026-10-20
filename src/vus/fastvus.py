@@ -183,19 +183,22 @@ class FastVUS:
     def per_point_caps(self, label, start, end, b_left, b_right):
         """Spread per-anomaly caps to per-point caps, one array per side.
 
-        Every point inherits the caps of its nearest anomaly (distance 0 when
-        inside). Used by AutoVUS to cap each anomaly's buffer at its own b*.
+        A point's left ramp comes from the anomaly whose start is nearest
+        ahead of it, so it takes that anomaly's left cap; its right ramp comes
+        from the anomaly whose end is nearest behind it, so it takes that
+        anomaly's right cap. This is the same pairing distance_from_anomaly
+        makes, so the capped label is the max over anomalies of their own
+        capped ramps. Used by AutoVUS to cap each anomaly at its own b*.
         """
         b_left = np.asarray(b_left, dtype=float)
         b_right = np.asarray(b_right, dtype=float)
         n = len(start)
         if len(b_left) != n or len(b_right) != n:
             raise ValueError(f"{len(b_left)}/{len(b_right)} caps for {n} anomalies")
-        t = np.arange(len(label))[:, None]
-        dist = np.maximum(start[None, :] - t, t - end[None, :])
-        np.clip(dist, 0, None, out=dist)
-        nearest = np.argmin(dist, axis=1)
-        return b_left[nearest], b_right[nearest]
+        t = np.arange(len(label))
+        ahead = np.minimum(np.searchsorted(start, t, side='left'), n - 1)      # first start >= t
+        behind = np.maximum(np.searchsorted(end, t, side='right') - 1, 0)     # last end <= t
+        return b_left[ahead], b_right[behind]
 
     # ------------------------------------------------------------------
     # Step 5: thresholds and score mask
@@ -247,30 +250,41 @@ class FastVUS:
     # Step 6: existence reward
     # ------------------------------------------------------------------
     @timed
-    def existence(self, buffered, score, thresholds, start, end):
+    def existence(self, buffered, score, thresholds, start, end, cap_left=None, cap_right=None):
         """Fraction of anomalies detected, shape (n_buffers, n_thresholds).
 
         An anomaly is detected at a threshold if the max score inside its
-        buffered region reaches it. For each anomaly the max is located by
-        region (inside, left buffer, right buffer); once a buffer detects it,
-        every wider buffer does too, so only the narrower buffers are revisited.
-        Anomalies whose buffers overlap merge into one: the count per buffer
+        buffered region reaches it. The region of anomaly k at buffer b is
+        [start - reach_left, end + reach_right], the same one the buffered
+        label covers: reach = min(b, cap) on each rewarded side, 0 on a side
+        that self.side excludes. For each anomaly the max is located by part
+        (inside, left buffer, right buffer); once a buffer detects it, every
+        wider buffer does too, so only the narrower buffers are revisited.
+        Anomalies whose regions meet merge into one: the count per buffer
         drops and a merged anomaly is detected if any of its parts is.
+
+        cap_left, cap_right: per-anomaly caps (one value per anomaly) or None.
         """
         n_buffers, T = buffered.shape
+        n_anomalies_total = len(start)
         n_thresholds = len(thresholds)
         thresholds_asc = thresholds[::-1]
         existence = np.zeros((n_buffers, n_thresholds))
+        b = self.buffers[:, None]
+        reach_left = (b if cap_left is None else np.minimum(b, np.asarray(cap_left, dtype=int)[None, :])) \
+            if self.side in ('both', 'left') else np.zeros((n_buffers, n_anomalies_total), dtype=int)
+        reach_right = (b if cap_right is None else np.minimum(b, np.asarray(cap_right, dtype=int)[None, :])) \
+            if self.side in ('both', 'right') else np.zeros((n_buffers, n_anomalies_total), dtype=int)
+        starts = np.maximum(start[None, :] - reach_left, 0)      # (n_buffers, n_anomalies)
+        ends = np.minimum(end[None, :] + reach_right, T - 1)
 
-        starts = np.maximum(start[None, :] - self.buffers[:, None], 0)      # (n_buffers, n_anomalies)
-        ends = np.minimum(end[None, :] + self.buffers[:, None], T - 1)
-
-        n_anomalies = np.full(n_buffers, len(start), dtype=int)
-        merge_from = np.zeros(len(start), dtype=int)   # buffer index where anomaly k merges with k+1
-        for k, (next_start, this_end) in enumerate(zip(start[1:], end[:-1])):
-            overlap = 2 * self.L - (next_start - this_end)
-            if overlap >= 0:
-                index = math.ceil((self.L - overlap // 2) / self.step)
+        # Buffer index from which anomaly k and k+1 share one region (n_buffers = never).
+        n_anomalies = np.full(n_buffers, n_anomalies_total, dtype=int)
+        merge_from = np.full(n_anomalies_total, n_buffers, dtype=int)
+        for k in range(n_anomalies_total - 1):
+            meets = ends[:, k] >= starts[:, k + 1]
+            if meets.any():
+                index = int(np.argmax(meets))
                 n_anomalies[index:] -= 1
                 merge_from[k] = index
 
@@ -278,7 +292,7 @@ class FastVUS:
             return n_thresholds - np.searchsorted(thresholds_asc, value, side='right')
 
         prev = np.zeros((n_buffers, n_thresholds), dtype=int)
-        for k in range(len(start)):
+        for k in range(n_anomalies_total):
             s, e = start[k], end[k]
             curr = np.zeros((n_buffers, n_thresholds), dtype=int)
             i = n_buffers - 1
@@ -302,7 +316,7 @@ class FastVUS:
 
             merged = np.zeros_like(curr)
             m = merge_from[k - 1]           # the last anomaly never merges forward
-            if m > 0:
+            if m < n_buffers:
                 merged[m:] = np.logical_or(curr[m:], prev[m:])
                 curr[m:] = np.logical_and(curr[m:], np.logical_not(prev[m:]))
             existence += curr
@@ -400,15 +414,15 @@ class FastVUS:
             _, (start, end) = self.anomaly_coordinates(label)
 
         dist_left, dist_right = self.distance_from_anomaly(label, start, end)
+        point_caps = (None, None)
         if cap_left is not None:
-            cap_left, cap_right = self.per_point_caps(label, start, end, cap_left, cap_right)
-        buffered = self.buffered_labels(label, dist_left, dist_right, cap_left, cap_right)
-
+            point_caps = self.per_point_caps(label, start, end, cap_left, cap_right)
+        buffered = self.buffered_labels(label, dist_left, dist_right, *point_caps)
         self.label_mass = buffered.sum(axis=1)
 
         thresholds = self.thresholds(buffered, score)
         score_mask = self.score_mask(score, thresholds)
-        existence = self.existence(buffered, score, thresholds, start, end)
+        existence = self.existence(buffered, score, thresholds, start, end, cap_left, cap_right)
         tp, fp, positives = self.confusion_matrix(buffered, score_mask)
         if self.global_mask:
             fp = fp + self.false_positives_outside(score_outside, thresholds)

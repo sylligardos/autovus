@@ -216,10 +216,10 @@ class FastVUSGPU:
         n = start.numel()
         if b_left.numel() != n or b_right.numel() != n:
             raise ValueError(f"{b_left.numel()}/{b_right.numel()} caps for {n} anomalies")
-        t = torch.arange(len(label), device=self.device)[:, None]
-        dist = torch.clamp(torch.maximum(start[None, :] - t, t - end[None, :]), min=0)
-        nearest = dist.argmin(dim=1)
-        return b_left[nearest], b_right[nearest]
+        t = torch.arange(len(label), device=self.device)
+        ahead = torch.clamp(torch.searchsorted(start, t, side='left'), max=n - 1)
+        behind = torch.clamp(torch.searchsorted(end, t, side='right') - 1, min=0)
+        return b_left[ahead], b_right[behind]
 
     # ------------------------------------------------------------------
     # Step 5: thresholds and score mask
