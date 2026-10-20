@@ -6,7 +6,7 @@ dataset, or one time series. Reads the ranking-experiment CSV produced by
 compute_ranking_adapt.py.
 
 Run with:
-    conda run -n ffvus streamlit run src/demo_adaptive.py
+    conda run -n autovus streamlit run src/demo_adaptive.py
 """
 
 import os
@@ -255,7 +255,7 @@ def main():
             'Ranking results not found at '
             '`experiments/ranking_adapt/scores_all.csv`.\n\n'
             'Generate with:\n```\n'
-            'conda run -n ffvus python src/compute_ranking_adapt.py --dataset all --no-community\n```'
+            'conda run -n autovus python src/compute_ranking_adapt.py --dataset all --no-community\n```'
         )
         return
 

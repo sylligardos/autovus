@@ -14,9 +14,9 @@ Panels 4 and 5 are the two candidate "decumulated" views: A[b] removes the
 running-mean smear; diff(A) localizes where each buffer first earns its reward.
 
 Usage:
-  conda run -n ffvus python src/test_decumulated_vus.py
-  conda run -n ffvus python src/test_decumulated_vus.py --dataset NAB --detector IForest
-  conda run -n ffvus python src/test_decumulated_vus.py --n-series 3 --slope-size 200 --show
+  conda run -n autovus python src/test_decumulated_vus.py
+  conda run -n autovus python src/test_decumulated_vus.py --dataset NAB --detector IForest
+  conda run -n autovus python src/test_decumulated_vus.py --n-series 3 --slope-size 200 --show
 """
 
 import argparse

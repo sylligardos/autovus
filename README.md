@@ -86,7 +86,7 @@ Notebooks under src/notebooks reproduce figures and runtime analyses reported in
 The demo requires two precomputed data files, both produced by a single script:
 
 ```bash
-conda run -n ffvus python src/precompute_demo.py --L 1024
+conda run -n autovus python src/precompute_demo.py --L 1024
 ```
 
 | Output file | Contents |
@@ -99,7 +99,7 @@ Options: `--skip rankings`, `--skip existence`, `--force` (re-run even if output
 ### Launch
 
 ```bash
-conda run -n ffvus streamlit run src/demo_vus.py
+conda run -n autovus streamlit run src/demo_vus.py
 ```
 
 ### Tabs

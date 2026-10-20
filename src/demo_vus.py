@@ -2,7 +2,7 @@
 Interactive VUS explorer (Streamlit).
 
 Run with:
-    conda run -n ffvus streamlit run src/demo_vus.py
+    conda run -n autovus streamlit run src/demo_vus.py
 """
 
 import base64
@@ -1896,7 +1896,7 @@ def existence_map_page(dataset: str, fname: str, slope_size: int):
         'how often is the anomaly detected across buffer sizes 0 → b and all score thresholds? '
         '**Green = always found · Red = never found · Gray = normal region.** '
         'Run the precomputation script first: '
-        '`conda run -n ffvus python scripts/precompute_existence.py --L 1024`'
+        '`conda run -n autovus python scripts/precompute_existence.py --L 1024`'
     )
 
     data = load_precomputed_existence()
@@ -1904,7 +1904,7 @@ def existence_map_page(dataset: str, fname: str, slope_size: int):
         st.error(
             'Precomputed existence data not found at `experiments/precomputed/existence_maps.npz`.\n\n'
             'Generate it with:\n```\n'
-            'conda run -n ffvus python scripts/precompute_existence.py --L 1024\n```'
+            'conda run -n autovus python scripts/precompute_existence.py --L 1024\n```'
         )
         return
 
@@ -2410,7 +2410,7 @@ def adaptive_buffer_page(dataset: str, fname: str):
     if rk is None:
         st.info(
             'Ranking results not found. Generate with:\n```\n'
-            'conda run -n ffvus python src/compute_ranking_adapt.py --dataset all --no-community\n```'
+            'conda run -n autovus python src/compute_ranking_adapt.py --dataset all --no-community\n```'
         )
         return
 

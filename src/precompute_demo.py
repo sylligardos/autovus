@@ -24,10 +24,10 @@ rankings output arrays
 
 Usage
 -----
-    conda run -n ffvus python src/precompute_demo.py --L 1024
-    conda run -n ffvus python src/precompute_demo.py --L 1024 --skip existence
-    conda run -n ffvus python src/precompute_demo.py --L 1024 --skip rankings
-    conda run -n ffvus python src/precompute_demo.py --L 1024 --force
+    conda run -n autovus python src/precompute_demo.py --L 1024
+    conda run -n autovus python src/precompute_demo.py --L 1024 --skip existence
+    conda run -n autovus python src/precompute_demo.py --L 1024 --skip rankings
+    conda run -n autovus python src/precompute_demo.py --L 1024 --force
 """
 
 import argparse

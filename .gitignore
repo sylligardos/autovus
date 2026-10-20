@@ -188,4 +188,4 @@ cython_debug/
 .pypirc
 
 # Local-only symlink to the (separate) Overleaf paper repo — never commit
-references/ffvus-paper
+references/autovus-paper

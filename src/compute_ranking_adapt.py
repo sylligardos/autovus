@@ -17,9 +17,9 @@ The CSV is the source of truth reused by analyze_ranking_adapt.py (Stage 2) and 
 the paper; it is appended incrementally (crash-safe, progress visible).
 
 Usage:
-  conda run -n ffvus python src/compute_ranking_adapt.py --dataset all
-  conda run -n ffvus python src/compute_ranking_adapt.py --dataset Stock
-  conda run -n ffvus python src/compute_ranking_adapt.py --dataset NAB --test
+  conda run -n autovus python src/compute_ranking_adapt.py --dataset all
+  conda run -n autovus python src/compute_ranking_adapt.py --dataset Stock
+  conda run -n autovus python src/compute_ranking_adapt.py --dataset NAB --test
 """
 
 import argparse

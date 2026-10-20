@@ -7,7 +7,7 @@ expensive VUS computation. This script quantifies, across the full TSB-AD benchm
 the fraction of each series removed and the resulting label shrink factor (T / kept).
 
 Companion to src/existence_skip_analysis.py. Run with the ffvus conda env:
-    conda run -n ffvus python src/global_mask_stats.py [--slope_size 128]
+    conda run -n autovus python src/global_mask_stats.py [--slope_size 128]
 """
 
 import os
