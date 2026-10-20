@@ -11,8 +11,8 @@ Headline metric: skill_adapt_A = Adjusted VUS (aVUS). Skill columns are CLIPPED 
 back to our non-adaptive vus_full if community is unavailable.
 
 Usage:
-  conda run -n autovus python src/analyze_ranking_adapt.py --scores experiments/ranking_adapt/scores_NAB.csv
-  conda run -n autovus python src/analyze_ranking_adapt.py            # globs scores_*.csv
+  conda run -n autovus python src/experiments/analyze_ranking_adapt.py --scores experiments/ranking_adapt/scores_NAB.csv
+  conda run -n autovus python src/experiments/analyze_ranking_adapt.py            # globs scores_*.csv
 """
 
 import argparse

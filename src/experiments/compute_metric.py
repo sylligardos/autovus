@@ -20,6 +20,9 @@ import torch
 from tqdm import tqdm
 
 from tsad_parser import TSADParser
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from baselines import compute as baseline_compute

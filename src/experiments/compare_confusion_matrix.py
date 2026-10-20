@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 

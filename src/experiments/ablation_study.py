@@ -6,11 +6,11 @@ Runs on the full TSB-AD benchmark. By default it uses the first detector; use
 --detector to pick another, 'all' detectors, or a 'random' detector per series.
 
 Usage:
-    python src/ablation_study.py                     # Full TSB-AD, first detector
-    python src/ablation_study.py --detector all      # Every detector
-    python src/ablation_study.py --test              # Quick test (10 time series)
-    python src/ablation_study.py --test --cpu_only   # CPU-only quick test
-    python src/ablation_study.py --test --gpu_only   # GPU-only quick test
+    python src/experiments/ablation_study.py                     # Full TSB-AD, first detector
+    python src/experiments/ablation_study.py --detector all      # Every detector
+    python src/experiments/ablation_study.py --test              # Quick test (10 time series)
+    python src/experiments/ablation_study.py --test --cpu_only   # CPU-only quick test
+    python src/experiments/ablation_study.py --test --gpu_only   # GPU-only quick test
 """
 
 import argparse
@@ -30,6 +30,9 @@ import torch
 from tqdm import tqdm
 
 from tsad_parser import TSADParser
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from baselines import compute as baseline_compute
@@ -635,7 +638,7 @@ def main():
     args = parser.parse_args()
 
     # Ensure paths are relative to the project root
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     os.chdir(project_root)
 
     # Analysis-only mode: load an existing results file and print the summary.

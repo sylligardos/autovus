@@ -6,8 +6,8 @@ create_safe_mask with extra_safe=True) and discards the rest of the label before
 expensive VUS computation. This script quantifies, across the full TSB-AD benchmark,
 the fraction of each series removed and the resulting label shrink factor (T / kept).
 
-Companion to src/existence_skip_analysis.py. Run with the ffvus conda env:
-    conda run -n autovus python src/global_mask_stats.py [--slope_size 128]
+Companion to src/experiments/existence_skip_analysis.py. Run with the ffvus conda env:
+    conda run -n autovus python src/experiments/global_mask_stats.py [--slope_size 128]
 """
 
 import os
@@ -16,7 +16,7 @@ import argparse
 import numpy as np
 
 # Ensure project root for data paths
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 

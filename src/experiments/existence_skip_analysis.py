@@ -11,7 +11,7 @@ import pandas as pd
 from tqdm import tqdm
 
 # Ensure project root for data paths
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 

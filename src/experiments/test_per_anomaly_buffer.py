@@ -2,8 +2,8 @@
 Per-Anomaly Adaptive Buffer — Test Script
 
 Two modes:
-  python src/test_per_anomaly_buffer.py           # unit tests (synthetic)
-  python src/test_per_anomaly_buffer.py --real    # real TSB-AD analysis
+  python src/experiments/test_per_anomaly_buffer.py           # unit tests (synthetic)
+  python src/experiments/test_per_anomaly_buffer.py --real    # real TSB-AD analysis
 
 Real-data mode loads the most "interesting" series (those with the most
 varied anomaly lengths), runs compute_per_anomaly_buffer for every detector,
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vus.vus_numpy import VUSNumpy
 
 

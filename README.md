@@ -38,8 +38,11 @@ conda run -n autovus streamlit run src/demo/demo_vus.py
 
 ## Layout
 
-- `src/vus/`: the metric.
-- `src/`: experiment and test scripts, demo.
+- `src/vus/`: the metric (FastVUS CPU and GPU, AutoVUS).
+- `src/baselines/`: upstream TSB-AD metrics (vendored, untouched) and PATE, behind one `compute()` function.
+- `src/experiments/`: experiment and test scripts. Run them from the repo root.
+- `src/demo/`: the Streamlit demo.
+- `src/notebooks/`: analysis notebooks.
 - `scripts/`: CLEPS cluster job scripts (cluster env is still called `ffvus`).
 - `references/`: paper plan, feedback, past submissions. The paper itself lives in Overleaf.
 - `experiments/`: outputs (not in git). Old results are in `~/Documents/autovus-archive/`.

@@ -17,9 +17,9 @@ The CSV is the source of truth reused by analyze_ranking_adapt.py (Stage 2) and 
 the paper; it is appended incrementally (crash-safe, progress visible).
 
 Usage:
-  conda run -n autovus python src/compute_ranking_adapt.py --dataset all
-  conda run -n autovus python src/compute_ranking_adapt.py --dataset Stock
-  conda run -n autovus python src/compute_ranking_adapt.py --dataset NAB --test
+  conda run -n autovus python src/experiments/compute_ranking_adapt.py --dataset all
+  conda run -n autovus python src/experiments/compute_ranking_adapt.py --dataset Stock
+  conda run -n autovus python src/experiments/compute_ranking_adapt.py --dataset NAB --test
 """
 
 import argparse
@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from baselines import compute as baseline_compute
