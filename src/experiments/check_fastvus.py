@@ -45,11 +45,18 @@ def same(a, b):
     return np.array_equal(np.asarray(a), np.asarray(b))
 
 
+def plain(fn):
+    """Call an old method and drop the timing that @time_it adds, when it does."""
+    def call(*args, **kwargs):
+        out = fn(*args, **kwargs)
+        return out[0] if hasattr(fn, '__wrapped__') else out
+    return call
+
+
 def check(step_name, fn_new, fn_old):
-    """fn_old returns (result, seconds) because of the old @time_it decorator."""
     for name, (label, score) in toy_cases().items():
         out_new = fn_new(label, score)
-        out_old, _ = fn_old(label, score)
+        out_old = fn_old(label, score)
         if not same(out_new, out_old):
             print(f"  MISMATCH [{step_name}] on '{name}'\n    new: {out_new}\n    old: {out_old}")
             return False
@@ -65,26 +72,26 @@ def main():
     results.append(check(
         'anomaly coordinates',
         lambda label, score: new.anomaly_coordinates(label),
-        lambda label, score: old.get_anomalies_coordinates(label),
+        lambda label, score: plain(old.get_anomalies_coordinates)(label),
     ))
 
     def coords(label):
-        return old.get_anomalies_coordinates(label)[0][1]   # (start, end) with edges
+        return plain(old.get_anomalies_coordinates)(label)[1]   # (start, end) with edges
 
     for extra_safe in (False, True):
         results.append(check(
             f'safe mask (extra_safe={extra_safe})',
             lambda label, score: new.safe_mask(label, *coords(label), extra_safe=extra_safe),
-            lambda label, score: old.create_safe_mask(label, *coords(label), extra_safe=extra_safe),
+            lambda label, score: plain(old.create_safe_mask)(label, *coords(label), extra_safe=extra_safe),
         ))
     results.append(check(
         'distance from anomaly',
         lambda label, score: new.distance_from_anomaly(label, *coords(label)),
-        lambda label, score: old.distance_from_anomaly(label, *coords(label)),
+        lambda label, score: plain(old.distance_from_anomaly)(label, *coords(label)),
     ))
 
     def dists(label):
-        return old.distance_from_anomaly(label, *coords(label))[0]
+        return plain(old.distance_from_anomaly)(label, *coords(label))
 
     for side in ('both', 'left', 'right'):
         new_s = FastVUS(L=L, step=STEP, side=side)
@@ -92,7 +99,7 @@ def main():
         results.append(check(
             f'buffered labels (side={side})',
             lambda label, score: new_s.buffered_labels(label, *dists(label)),
-            lambda label, score: (old_s.add_slopes_function(label, *dists(label)), 0),
+            lambda label, score: plain(old_s.add_slopes_function)(label, *dists(label)),
         ))
 
     def caps(label):
@@ -103,13 +110,69 @@ def main():
     results.append(check(
         'per-point caps',
         lambda label, score: new.per_point_caps(label, *coords(label), *caps(label)),
-        lambda label, score: (old._per_point_cap(label, *coords(label), *caps(label)), 0),
+        lambda label, score: plain(old._per_point_cap)(label, *coords(label), *caps(label)),
     ))
     results.append(check(
         'buffered labels with caps',
         lambda label, score: new.buffered_labels(label, *dists(label), *new.per_point_caps(label, *coords(label), *caps(label))),
-        lambda label, score: (old.add_slopes_function(label, *dists(label), *old._per_point_cap(label, *coords(label), *caps(label))), 0),
+        lambda label, score: plain(old.add_slopes_function)(label, *dists(label), *old._per_point_cap(label, *coords(label), *caps(label))),
     ))
+
+    def buffered(label):
+        return new.buffered_labels(label, *dists(label))
+
+    def thr(label, score):
+        return new.thresholds(buffered(label), score)
+
+    results.append(check(
+        'thresholds',
+        lambda label, score: thr(label, score),
+        lambda label, score: plain(old.get_pr_relevant_thresholds_vus)(buffered(label), score, max_thresholds=old.max_thresholds),
+    ))
+    results.append(check(
+        'score mask',
+        lambda label, score: new.score_mask(score, thr(label, score)),
+        lambda label, score: plain(old.get_score_mask)(score, thr(label, score)),
+    ))
+    results.append(check(
+        'false positives outside the mask',
+        lambda label, score: new.false_positives_outside(score[::3], thr(label, score)),
+        lambda label, score: (score[::3] >= thr(label, score)[:, None]).sum(axis=1),
+    ))
+    results.append(check(
+        'existence',
+        lambda label, score: new.existence(buffered(label), score, thr(label, score), *coords(label)),
+        lambda label, score: plain(old.existence_optimized)(buffered(label), score, thr(label, score), *coords(label)),
+    ))
+    for gm in (True, False):
+        new_g = FastVUS(L=L, step=STEP, global_mask=gm)
+        old_g = VUSNumpy(slope_size=L, step=STEP, global_mask=gm)
+        results.append(check(
+            f'confusion matrix (global_mask={gm})',
+            lambda label, score: new_g.confusion_matrix(buffered(label), new.score_mask(score, thr(label, score))),
+            lambda label, score: (lambda r: (r[2], r[0], r[3]))(plain(old_g.compute_confusion_matrix)(buffered(label), new.score_mask(score, thr(label, score)))),
+        ))
+
+    def pr_inputs(label, score):
+        t = thr(label, score)
+        sm = new.score_mask(score, t)
+        tp, fp, pos = new.confusion_matrix(buffered(label), sm)
+        ex = new.existence(buffered(label), score, t, *coords(label))
+        return tp, fp, pos, ex
+
+    results.append(check(
+        'precision-recall',
+        lambda label, score: new.precision_recall(*pr_inputs(label, score)),
+        lambda label, score: plain(old.precision_recall_curve)(*pr_inputs(label, score)),
+    ))
+    for cum in (False, True):
+        new_c = FastVUS(L=L, step=STEP, cumulative=cum)
+        old_c = VUSNumpy(slope_size=L, step=STEP, cumulative=cum)
+        results.append(check(
+            f'auc (cumulative={cum})',
+            lambda label, score: new_c.auc(*new.precision_recall(*pr_inputs(label, score))[::-1]),
+            lambda label, score: plain(old_c.auc)(*new.precision_recall(*pr_inputs(label, score))[::-1]),
+        ))
 
     print('ALL OK' if all(results) else 'FAILURES')
     sys.exit(0 if all(results) else 1)

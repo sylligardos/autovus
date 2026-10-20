@@ -198,3 +198,173 @@ class FastVUS:
         np.clip(dist, 0, None, out=dist)
         nearest = np.argmin(dist, axis=1)
         return b_left[nearest], b_right[nearest]
+
+    # ------------------------------------------------------------------
+    # Step 5: thresholds and score mask
+    # ------------------------------------------------------------------
+    @timed
+    def thresholds(self, buffered, score):
+        """The score values at which the VUS-PR surface can change, descending.
+
+        Under stepwise integration a threshold only matters if crossing it
+        adds true positives for some buffer, i.e. if the point it admits has
+        a non-zero value in the widest buffered label. Thresholds that admit
+        only plain normal points are dropped. Tied scores are handled by
+        keeping the last occurrence, so all tied points count at once.
+        If more than max_thresholds survive, they are subsampled uniformly
+        in cumulative-TP space (worst-case AUC error 1 / max_thresholds).
+        """
+        fuzzy = buffered.max(axis=0)
+        order = np.argsort(score)[::-1]
+        score_sorted = score[order]
+        distinct = np.r_[score_sorted[:-1] != score_sorted[1:], True]
+        tp = np.cumsum(fuzzy[order])[distinct]
+        keep = np.diff(tp, prepend=0.0) > 0
+        thresholds = score_sorted[distinct][keep]
+
+        if self.max_thresholds is not None and len(thresholds) > self.max_thresholds:
+            tp_kept = tp[keep]
+            targets = np.linspace(0.0, tp_kept[-1], self.max_thresholds + 1)[1:]
+            idx = np.searchsorted(tp_kept, targets, side='left')
+            idx = np.unique(np.clip(idx, 0, len(tp_kept) - 1))
+            thresholds = thresholds[idx]
+        return thresholds
+
+    @timed
+    def score_mask(self, score, thresholds):
+        """Boolean (n_thresholds, T): score[t] >= threshold."""
+        return score >= thresholds[:, None]
+
+    @timed
+    def false_positives_outside(self, score_outside, thresholds):
+        """Per-threshold count of points outside the global mask at or above it.
+
+        Those points are all normal, so they are false positives for every
+        buffer. Counted with a sort and a search instead of a full mask.
+        """
+        score_sorted = np.sort(score_outside)
+        return len(score_outside) - np.searchsorted(score_sorted, thresholds, side='left')
+
+    # ------------------------------------------------------------------
+    # Step 6: existence reward
+    # ------------------------------------------------------------------
+    @timed
+    def existence(self, buffered, score, thresholds, start, end):
+        """Fraction of anomalies detected, shape (n_buffers, n_thresholds).
+
+        An anomaly is detected at a threshold if the max score inside its
+        buffered region reaches it. For each anomaly the max is located by
+        region (inside, left buffer, right buffer); once a buffer detects it,
+        every wider buffer does too, so only the narrower buffers are revisited.
+        Anomalies whose buffers overlap merge into one: the count per buffer
+        drops and a merged anomaly is detected if any of its parts is.
+        """
+        n_buffers, T = buffered.shape
+        n_thresholds = len(thresholds)
+        thresholds_asc = thresholds[::-1]
+        existence = np.zeros((n_buffers, n_thresholds))
+
+        starts = np.maximum(start[None, :] - self.buffers[:, None], 0)      # (n_buffers, n_anomalies)
+        ends = np.minimum(end[None, :] + self.buffers[:, None], T - 1)
+
+        n_anomalies = np.full(n_buffers, len(start), dtype=int)
+        merge_from = np.zeros(len(start), dtype=int)   # buffer index where anomaly k merges with k+1
+        for k, (next_start, this_end) in enumerate(zip(start[1:], end[:-1])):
+            overlap = 2 * self.L - (next_start - this_end)
+            if overlap >= 0:
+                index = math.ceil((self.L - overlap // 2) / self.step)
+                n_anomalies[index:] -= 1
+                merge_from[k] = index
+
+        def threshold_index(value):
+            return n_thresholds - np.searchsorted(thresholds_asc, value, side='right')
+
+        prev = np.zeros((n_buffers, n_thresholds), dtype=int)
+        for k in range(len(start)):
+            s, e = start[k], end[k]
+            curr = np.zeros((n_buffers, n_thresholds), dtype=int)
+            i = n_buffers - 1
+            while i >= 0:
+                left = score[starts[i, k]:s + 1][::-1]
+                inside = score[s:e + 1]
+                right = score[e:ends[i, k] + 1]
+                arg_l, arg_in, arg_r = left.argmax(), inside.argmax(), right.argmax()
+                max_l, max_in, max_r = left[arg_l], inside[arg_in], right[arg_r]
+                if max_in >= max_l and max_in >= max_r:            # found inside the anomaly
+                    curr[:i + 1, threshold_index(max_in):] += 1
+                    break
+                elif max_l > max_r:                                # found in the left buffer
+                    first = math.ceil(arg_l / self.step)
+                    curr[first:i + 1, threshold_index(max_l):] += 1
+                    i = first - 1
+                else:                                              # found in the right buffer
+                    first = math.ceil(arg_r / self.step)
+                    curr[first:i + 1, threshold_index(max_r):] += 1
+                    i = first - 1
+
+            merged = np.zeros_like(curr)
+            m = merge_from[k - 1]           # the last anomaly never merges forward
+            if m > 0:
+                merged[m:] = np.logical_or(curr[m:], prev[m:])
+                curr[m:] = np.logical_and(curr[m:], np.logical_not(prev[m:]))
+            existence += curr
+            prev = np.logical_or(merged, curr)
+
+        return existence / n_anomalies[:, None]
+
+    # ------------------------------------------------------------------
+    # Step 7: confusion matrix
+    # ------------------------------------------------------------------
+    @timed
+    def confusion_matrix(self, buffered, score_mask):
+        """True positives, false positives and positives per (buffer, threshold).
+
+        TP is the dot product of the buffered label and the thresholded score.
+        It splits into the anomaly points, which are 1 in every buffer (one
+        sum shared by all buffers), and the buffer points (one matmul over
+        the buffer columns only). Positives are the mean of TP + FN and the
+        number of anomaly points, so recall stays at most 1.
+        """
+        label = buffered[0]
+        inside = np.where(label)[0]
+        if self.global_mask:
+            in_buffer = np.where(label == 0)[0]
+        else:
+            in_buffer = np.where((label == 0) & (buffered[-1] > 0))[0]
+
+        tp_inside = score_mask[:, inside].sum(axis=1)                          # (n_thresholds,)
+        tp = tp_inside + buffered[:, in_buffer] @ score_mask[:, in_buffer].T    # (n_buffers, n_thresholds)
+        fn = (~score_mask)[:, inside].sum(axis=1)
+        positives = (tp + fn + len(inside)) / 2
+        fp = score_mask.sum(axis=1) - tp
+        return tp, fp, positives
+
+    # ------------------------------------------------------------------
+    # Step 8: precision-recall curves and their area
+    # ------------------------------------------------------------------
+    @timed
+    def precision_recall(self, tp, fp, positives, existence):
+        """Precision and recall per buffer, each (n_buffers, n_thresholds + 1).
+
+        The first column is the empty prediction (precision 1, recall 0).
+        Recall is multiplied by the existence reward.
+        """
+        ones = np.ones((self.n_buffers, 1))
+        zeros = np.zeros((self.n_buffers, 1))
+        precision = np.hstack((ones, tp / (tp + fp)))
+        recall = np.hstack((zeros, tp / positives))
+        recall[recall > 1] = 1
+        recall[:, 1:] *= existence
+        return precision, recall
+
+    @timed
+    def auc(self, recall, precision):
+        """Stepwise area under each PR curve, averaged over the buffers.
+
+        Returns the mean over all buffers, or with cumulative=True the running
+        mean: element i is VUS-PR with L = self.buffers[i].
+        """
+        area = np.sum((recall[:, 1:] - recall[:, :-1]) * precision[:, 1:], axis=1)
+        if self.cumulative:
+            return np.cumsum(area) / np.arange(1, len(area) + 1)
+        return area.mean()
