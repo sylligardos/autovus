@@ -405,6 +405,10 @@ class FastVUS:
         self.timings = {}
         label = np.asarray(label)
         score = np.asarray(score, dtype=np.float64)
+        if len(label) != len(score):
+            raise ValueError(f"label has {len(label)} points, score {len(score)}")
+        if not label.any():
+            raise ValueError("label has no anomaly: VUS-PR is undefined")
 
         _, (start, end) = self.anomaly_coordinates(label)
         mask = self.safe_mask(label, start, end, extra_safe=self.global_mask)

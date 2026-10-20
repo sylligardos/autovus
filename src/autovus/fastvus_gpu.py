@@ -373,8 +373,10 @@ class FastVUSGPU:
         self._update_memory_budget()
         label = self._tensor(label, torch.int8)
         score = self._tensor(score, torch.float64)
-        if label.numel() == 0:
-            raise ValueError("empty label")
+        if label.numel() != score.numel():
+            raise ValueError(f"label has {label.numel()} points, score {score.numel()}")
+        if not bool(label.any()):
+            raise ValueError("label has no anomaly: VUS-PR is undefined")
 
         _, (start, end) = self.anomaly_coordinates(label)
         mask = self.safe_mask(label, start, end, extra_safe=self.global_mask)

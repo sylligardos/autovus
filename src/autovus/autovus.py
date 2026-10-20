@@ -203,12 +203,11 @@ class AutoVUS:
     def compute(self, label, score):
         """select() then score() with the selected buffers; the score dict plus 'anomalies'."""
         anomalies = self.select(label, score)
-        score = self.floor_dust(score, self.dust_floor)
         if not anomalies:
-            result = self.score(label, score, None, None)
-        else:
-            cap_left = np.array([a['left']['buffer_val'] for a in anomalies])
-            cap_right = np.array([a['right']['buffer_val'] for a in anomalies])
-            result = self.score(label, score, cap_left, cap_right)
+            raise ValueError("label has no anomaly: VUS-PR is undefined")
+        score = self.floor_dust(score, self.dust_floor)
+        cap_left = np.array([a['left']['buffer_val'] for a in anomalies])
+        cap_right = np.array([a['right']['buffer_val'] for a in anomalies])
+        result = self.score(label, score, cap_left, cap_right)
         result['anomalies'] = anomalies
         return result
