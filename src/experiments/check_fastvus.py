@@ -68,6 +68,21 @@ def main():
         lambda label, score: old.get_anomalies_coordinates(label),
     ))
 
+    def coords(label):
+        return old.get_anomalies_coordinates(label)[0][1]   # (start, end) with edges
+
+    for extra_safe in (False, True):
+        results.append(check(
+            f'safe mask (extra_safe={extra_safe})',
+            lambda label, score: new.safe_mask(label, *coords(label), extra_safe=extra_safe),
+            lambda label, score: old.create_safe_mask(label, *coords(label), extra_safe=extra_safe),
+        ))
+    results.append(check(
+        'distance from anomaly',
+        lambda label, score: new.distance_from_anomaly(label, *coords(label)),
+        lambda label, score: old.distance_from_anomaly(label, *coords(label)),
+    ))
+
     print('ALL OK' if all(results) else 'FAILURES')
     sys.exit(0 if all(results) else 1)
 

@@ -81,3 +81,54 @@ class FastVUS:
         if start.shape != end.shape:
             raise ValueError(f"Unbalanced anomaly starts and ends: {start} vs {end}")
         return (start_inner, end_inner), (start, end)
+
+    # ------------------------------------------------------------------
+    # Step 2: global mask
+    # ------------------------------------------------------------------
+    @timed
+    def safe_mask(self, label, start, end, extra_safe=False):
+        """Boolean mask of the points that any buffer up to L can reach.
+
+        Every anomaly is extended by L + 1 points on each side (one more with
+        extra_safe), so dropping the points outside the mask changes nothing
+        in the buffered labels. The score outside the mask only contributes
+        false positives, counted separately in compute().
+        """
+        T = len(label)
+        reach = self.L + 1 + int(extra_safe)
+        start_safe = np.maximum(start - reach, 0)
+        end_safe = np.minimum(end + reach + 1, T - 1)
+
+        delta = np.zeros(T, dtype=np.int8)
+        np.add.at(delta, start_safe, 1)
+        np.add.at(delta, end_safe, -1)
+        mask = np.cumsum(delta) > 0
+        # TODO (D2): the last point is set by hand; verify the no-anomaly case end to end.
+        mask[-1] = (len(end_safe) > 0 and end_safe[-1] == T - 1) if extra_safe else label[-1]
+        return mask
+
+    # ------------------------------------------------------------------
+    # Step 3: distance of every point from the anomalies
+    # ------------------------------------------------------------------
+    @timed
+    def distance_from_anomaly(self, label, start, end):
+        """Per-point distance to the nearest anomaly boundary, one array per side.
+
+        dist_left[t]  = nearest anomaly start at or after t, minus t (drives the
+                        buffer before an anomaly); inf if there is none.
+        dist_right[t] = t minus the nearest anomaly end at or before t (drives
+                        the buffer after an anomaly); inf if there is none.
+        Points inside an anomaly get distance 0 on the relevant side.
+        """
+        # TODO: builds a (T, n_anomalies) matrix; revisit if memory bites.
+        T = len(label)
+        dist_left = np.full(T, np.inf)
+        dist_right = np.full(T, np.inf)
+        if len(start) == 0:
+            return dist_left, dist_right
+        t = np.arange(T)[:, None]
+        to_start = start[None, :] - t
+        dist_left = np.where(to_start >= 0, to_start, np.inf).min(axis=1)
+        from_end = t - end[None, :]
+        dist_right = np.where(from_end >= 0, from_end, np.inf).min(axis=1)
+        return dist_left, dist_right
