@@ -24,10 +24,10 @@ rankings output arrays
 
 Usage
 -----
-    conda run -n autovus python src/precompute_demo.py --L 1024
-    conda run -n autovus python src/precompute_demo.py --L 1024 --skip existence
-    conda run -n autovus python src/precompute_demo.py --L 1024 --skip rankings
-    conda run -n autovus python src/precompute_demo.py --L 1024 --force
+    conda run -n autovus python src/demo/precompute_demo.py --L 1024
+    conda run -n autovus python src/demo/precompute_demo.py --L 1024 --skip existence
+    conda run -n autovus python src/demo/precompute_demo.py --L 1024 --skip rankings
+    conda run -n autovus python src/demo/precompute_demo.py --L 1024 --force
 """
 
 import argparse
@@ -37,8 +37,9 @@ import sys
 import numpy as np
 from tqdm import tqdm
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ROOT_DIR = os.path.dirname(_SRC_DIR)
+sys.path.insert(0, _SRC_DIR)
 
 from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy, select_best_buffer

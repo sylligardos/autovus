@@ -2,7 +2,7 @@
 Interactive VUS explorer (Streamlit).
 
 Run with:
-    conda run -n autovus streamlit run src/demo_vus.py
+    conda run -n autovus streamlit run src/demo/demo_vus.py
 """
 
 import base64
@@ -23,8 +23,9 @@ from PIL import Image
 from plotly.subplots import make_subplots as _plotly_subplots
 from scipy.stats import kendalltau
 
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-_ROOT_DIR = os.path.join(_SRC_DIR, '..')
+_DEMO_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_DEMO_DIR)
+_ROOT_DIR = os.path.dirname(_SRC_DIR)
 sys.path.insert(0, _SRC_DIR)
 
 from tsad_parser import TSADParser
@@ -252,11 +253,11 @@ def load_precomputed():
 
 
 # ---------------------------------------------------------------------------
-# Notes (persisted to notes/notes.json)
+# Notes (persisted to src/demo/notes.json)
 # ---------------------------------------------------------------------------
 
 def _notes_path() -> str:
-    return os.path.join(_ROOT_DIR, 'notes', 'notes.json')
+    return os.path.join(_DEMO_DIR, 'notes.json')
 
 
 def load_notes() -> list[dict]:

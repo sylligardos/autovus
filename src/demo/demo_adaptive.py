@@ -6,7 +6,7 @@ dataset, or one time series. Reads the ranking-experiment CSV produced by
 compute_ranking_adapt.py.
 
 Run with:
-    conda run -n autovus streamlit run src/demo_adaptive.py
+    conda run -n autovus streamlit run src/demo/demo_adaptive.py
 """
 
 import os
@@ -18,9 +18,10 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots as _plotly_subplots
 
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEMO_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_DEMO_DIR)
 sys.path.insert(0, _SRC_DIR)
-_ROOT_DIR = os.path.join(_SRC_DIR, '..')
+_ROOT_DIR = os.path.dirname(_SRC_DIR)
 _SCORES_CSV = os.path.join(_ROOT_DIR, 'experiments', 'ranking_adapt', 'scores_all.csv')
 
 # Final measures (CSV column -> display name). Skill (Adjusted VUS) columns are

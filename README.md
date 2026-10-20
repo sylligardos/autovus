@@ -33,7 +33,7 @@ vus = VUSTorch(slope_size=128, device='cuda')
 Demo:
 
 ```bash
-conda run -n autovus streamlit run src/demo_vus.py
+conda run -n autovus streamlit run src/demo/demo_vus.py
 ```
 
 ## Layout

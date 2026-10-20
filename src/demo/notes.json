@@ -1,0 +1,98 @@
+[
+  {
+    "id": "f3119c2cebc7",
+    "created": "2026-05-14T13:38:47",
+    "dataset": "KDD21",
+    "fname": "KDD21/115_UCR_Anomaly_CIMIS44AirTemperature3_4000_6520_6544.out",
+    "detector": "LOF",
+    "buffer": 1024,
+    "tags": [
+      "ranking"
+    ],
+    "text": "This time series has a lot of top-1 crossings as buffer grows, however the final VUS top detectror is objectively and after observation better than the AUC-PR best detector"
+  },
+  {
+    "id": "0b87e4d03f52",
+    "created": "2026-05-14T14:00:37",
+    "dataset": "SMD",
+    "fname": "SMD/machine-2-3.test.csv@4.out",
+    "detector": "LOF",
+    "buffer": 1024,
+    "tags": [
+      "label-issue"
+    ],
+    "text": "There are labels for anomalies that do not exist. The best detector is actually a noisy one because of the non-existent labels"
+  },
+  {
+    "id": "46bc1a01a66e",
+    "created": "2026-05-14T14:41:35",
+    "dataset": "YAHOO",
+    "fname": "YAHOO/YahooA4Benchmark-TS43_data.out",
+    "detector": "CNN",
+    "buffer": 512,
+    "tags": [
+      "wrong-best"
+    ],
+    "text": "this is a great example of rank changes. CNN's AUC is far better than normas. However for bigger slopes norma ranks significantly better."
+  },
+  {
+    "id": "9d333a52bfb3",
+    "created": "2026-05-14T14:59:37",
+    "dataset": "SMD",
+    "fname": "SMD/machine-2-4.test.csv@10.out",
+    "detector": "AE",
+    "buffer": 512,
+    "tags": [
+      "label-issue"
+    ],
+    "text": "There is an anomaly labeled here that does NOT exist!!"
+  },
+  {
+    "id": "7b8f78632515",
+    "created": "2026-05-14T15:10:34",
+    "dataset": "MITDB",
+    "fname": "MITDB/212.test.csv@1.out",
+    "detector": "AE",
+    "buffer": 1024,
+    "tags": [
+      "difficult-timeseries"
+    ],
+    "text": "There is not a single detector that performs well here based on VUS. Based on the existence though and the localization map we can identify the somewhat better detector and gain insight"
+  },
+  {
+    "id": "88b0cf784979",
+    "created": "2026-05-14T15:11:04",
+    "dataset": "MITDB",
+    "fname": "MITDB/212.test.csv@1.out",
+    "detector": "AE",
+    "buffer": 1024,
+    "tags": [
+      "difficult-timeseries"
+    ],
+    "text": "There is not a single detector that performs well here based on VUS. Based on the existence though and the localization map we can identify the somewhat better detector and gain insight"
+  },
+  {
+    "id": "7ea2ef9cef27",
+    "created": "2026-05-15T12:33:39",
+    "dataset": "Genesis",
+    "fname": "Genesis/genesis-anomalies.test.csv@5.out",
+    "detector": "AE",
+    "buffer": 512,
+    "tags": [
+      "label-issue"
+    ],
+    "text": "wtf is this bro?"
+  },
+  {
+    "id": "7b4696430283",
+    "created": "2026-05-15T15:19:45",
+    "dataset": "Daphnet",
+    "fname": "Daphnet/S03R02E0.test.csv@6.out",
+    "detector": "AE",
+    "buffer": 0,
+    "tags": [
+      "wrong-best"
+    ],
+    "text": "Scores show that detectors perform well, but they don't. This is a typical issue where currently, a single number as VUS, is just not enough."
+  }
+]
