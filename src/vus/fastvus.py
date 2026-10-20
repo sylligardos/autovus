@@ -132,3 +132,69 @@ class FastVUS:
         from_end = t - end[None, :]
         dist_right = np.where(from_end >= 0, from_end, np.inf).min(axis=1)
         return dist_left, dist_right
+
+    # ------------------------------------------------------------------
+    # Step 4: buffered labels, one row per buffer length
+    # ------------------------------------------------------------------
+    def _ramp(self, dist, cap):
+        """Ramp of one side for buffers step..L, shape (n_buffers - 1, T).
+
+        A point at distance d from the boundary gets 1 - (1 - zita) * d / b
+        for every buffer b >= d, else 0. dist = inf (no boundary on this side)
+        stays 0. cap (shape (T,) or None) limits each point's buffer to
+        min(b, cap[t]); None means the uniform buffer.
+        """
+        # TODO (B2): linear ramp, to become the curved one once the engine matches the old code.
+        T = len(dist)
+        out = np.zeros((self.n_buffers - 1, T))
+        b = self.buffers[1:, None]           # (n_buffers - 1, 1)
+        d = dist[None, :]                    # (1, T)
+        if cap is None:
+            reached = b >= d
+            np.subtract(1.0, (1.0 - self.zita) / b * d, out=out, where=reached)
+        else:
+            b_eff = np.minimum(b, cap[None, :])
+            reached = (b_eff >= d) & (b_eff > 0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                ramp = 1.0 - (1.0 - self.zita) * d / b_eff
+            np.copyto(out, ramp, where=reached)
+        return out
+
+    @timed
+    def buffered_labels(self, label, dist_left, dist_right, cap_left=None, cap_right=None):
+        """Label with buffers added, shape (n_buffers, T): row i is buffer self.buffers[i].
+
+        Row 0 is the label itself. The left and right ramps are combined with
+        the per-point maximum (side='both'), or one of them is used alone.
+        Points inside an anomaly are 1 in every row.
+        """
+        T = len(label)
+        out = np.zeros((self.n_buffers, T))
+        out[0] = label
+        if self.n_buffers > 1:
+            if self.side == 'left':
+                out[1:] = self._ramp(dist_left, cap_left)
+            elif self.side == 'right':
+                out[1:] = self._ramp(dist_right, cap_right)
+            else:
+                out[1:] = self._ramp(dist_left, cap_left)
+                np.maximum(out[1:], self._ramp(dist_right, cap_right), out=out[1:])
+        out[1:, label.astype(bool)] = 1
+        return out
+
+    def per_point_caps(self, label, start, end, b_left, b_right):
+        """Spread per-anomaly caps to per-point caps, one array per side.
+
+        Every point inherits the caps of its nearest anomaly (distance 0 when
+        inside). Used by AutoVUS to cap each anomaly's buffer at its own b*.
+        """
+        b_left = np.asarray(b_left, dtype=float)
+        b_right = np.asarray(b_right, dtype=float)
+        n = len(start)
+        if len(b_left) != n or len(b_right) != n:
+            raise ValueError(f"{len(b_left)}/{len(b_right)} caps for {n} anomalies")
+        t = np.arange(len(label))[:, None]
+        dist = np.maximum(start[None, :] - t, t - end[None, :])
+        np.clip(dist, 0, None, out=dist)
+        nearest = np.argmin(dist, axis=1)
+        return b_left[nearest], b_right[nearest]

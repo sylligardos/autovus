@@ -83,6 +83,34 @@ def main():
         lambda label, score: old.distance_from_anomaly(label, *coords(label)),
     ))
 
+    def dists(label):
+        return old.distance_from_anomaly(label, *coords(label))[0]
+
+    for side in ('both', 'left', 'right'):
+        new_s = FastVUS(L=L, step=STEP, side=side)
+        old_s = VUSNumpy(slope_size=L, step=STEP, side=side)
+        results.append(check(
+            f'buffered labels (side={side})',
+            lambda label, score: new_s.buffered_labels(label, *dists(label)),
+            lambda label, score: (old_s.add_slopes_function(label, *dists(label)), 0),
+        ))
+
+    def caps(label):
+        n = len(coords(label)[0])
+        rng = np.random.default_rng(1)
+        return rng.integers(0, L + 1, n), rng.integers(0, L + 1, n)
+
+    results.append(check(
+        'per-point caps',
+        lambda label, score: new.per_point_caps(label, *coords(label), *caps(label)),
+        lambda label, score: (old._per_point_cap(label, *coords(label), *caps(label)), 0),
+    ))
+    results.append(check(
+        'buffered labels with caps',
+        lambda label, score: new.buffered_labels(label, *dists(label), *new.per_point_caps(label, *coords(label), *caps(label))),
+        lambda label, score: (old.add_slopes_function(label, *dists(label), *old._per_point_cap(label, *coords(label), *caps(label))), 0),
+    ))
+
     print('ALL OK' if all(results) else 'FAILURES')
     sys.exit(0 if all(results) else 1)
 
