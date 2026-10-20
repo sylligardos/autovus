@@ -8,11 +8,22 @@
 L is the buffer length added on each side of every anomaly. The buffers
 0, step, 2*step, ..., L are all evaluated; VUS-PR is the mean AUC-PR over them.
 """
+import functools
 import math
 import time
-from contextlib import contextmanager
 
 import numpy as np
+
+
+def timed(method):
+    """Add the method's wall time to self.timings[<method name>]."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        start = time.perf_counter()
+        result = method(self, *args, **kwargs)
+        self.timings[method.__name__] = self.timings.get(method.__name__, 0.0) + time.perf_counter() - start
+        return result
+    return wrapper
 
 
 class FastVUS:
@@ -49,18 +60,12 @@ class FastVUS:
 
         self.buffers = np.arange(0, L + 1, step) if L > 0 else np.array([0])
         self.n_buffers = len(self.buffers)
-        self.timings = {}
-
-    @contextmanager
-    def _timed(self, name):
-        """Record the wall time of a step under self.timings[name]."""
-        start = time.time()
-        yield
-        self.timings[name] = self.timings.get(name, 0.0) + time.time() - start
+        self.timings = {}   # seconds per step, filled by compute()
 
     # ------------------------------------------------------------------
     # Step 1: anomaly coordinates
     # ------------------------------------------------------------------
+    @timed
     def anomaly_coordinates(self, label):
         """Start and end index of every anomaly, as two pairs of arrays.
 
