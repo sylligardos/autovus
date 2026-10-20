@@ -1,4 +1,4 @@
-name: ffvus
+name: autovus
 channels:
   - conda-forge
   - defaults
