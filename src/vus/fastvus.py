@@ -368,3 +368,47 @@ class FastVUS:
         if self.cumulative:
             return np.cumsum(area) / np.arange(1, len(area) + 1)
         return area.mean()
+
+    # ------------------------------------------------------------------
+    # The metric
+    # ------------------------------------------------------------------
+    def compute(self, label, score, cap_left=None, cap_right=None):
+        """VUS-PR of a score against a binary label.
+
+        Args:
+            label: 0/1 array of length T.
+            score: anomaly score of length T, higher = more anomalous.
+            cap_left, cap_right: optional per-anomaly buffer caps (one value
+                per anomaly, in order), used by AutoVUS. Pass both or neither.
+
+        Returns:
+            float, or with cumulative=True an array with one VUS-PR per
+            buffer length in self.buffers. Step times are in self.timings.
+        """
+        if (cap_left is None) != (cap_right is None):
+            raise ValueError("pass both cap_left and cap_right, or neither")
+        self.timings = {}
+        label = np.asarray(label)
+        score = np.asarray(score, dtype=np.float64)
+
+        _, (start, end) = self.anomaly_coordinates(label)
+        mask = self.safe_mask(label, start, end, extra_safe=self.global_mask)
+        if self.global_mask:
+            score_outside = score[~mask]
+            label, score = label[mask], score[mask]
+            _, (start, end) = self.anomaly_coordinates(label)
+
+        dist_left, dist_right = self.distance_from_anomaly(label, start, end)
+        if cap_left is not None:
+            cap_left, cap_right = self.per_point_caps(label, start, end, cap_left, cap_right)
+        buffered = self.buffered_labels(label, dist_left, dist_right, cap_left, cap_right)
+
+        thresholds = self.thresholds(buffered, score)
+        score_mask = self.score_mask(score, thresholds)
+        existence = self.existence(buffered, score, thresholds, start, end)
+        tp, fp, positives = self.confusion_matrix(buffered, score_mask)
+        if self.global_mask:
+            fp = fp + self.false_positives_outside(score_outside, thresholds)
+
+        precision, recall = self.precision_recall(tp, fp, positives, existence)
+        return self.auc(recall, precision)

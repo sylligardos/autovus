@@ -174,6 +174,32 @@ def main():
             lambda label, score: plain(old_c.auc)(*new.precision_recall(*pr_inputs(label, score))[::-1]),
         ))
 
+    # ---- the whole metric ----
+    configs = {
+        'default':            dict(L=L, step=STEP),
+        'cumulative':         dict(L=L, step=STEP, cumulative=True),
+        'no global mask':     dict(L=L, step=STEP, global_mask=False),
+        'step 4':             dict(L=L, step=4),
+        'side left':          dict(L=L, step=STEP, side='left'),
+        'side right':         dict(L=L, step=STEP, side='right'),
+        'L=0':                dict(L=0, step=0),
+        'max_thresholds=20':  dict(L=L, step=STEP, max_thresholds=20),
+    }
+    for cfg_name, cfg in configs.items():
+        old_cfg = dict(cfg); old_cfg['slope_size'] = old_cfg.pop('L')
+        new_c, old_c = FastVUS(**cfg), VUSNumpy(**old_cfg)
+        results.append(check(
+            f'compute ({cfg_name})',
+            lambda label, score: new_c.compute(label, score),
+            lambda label, score: plain(old_c.compute)(label, score)[0],
+        ))
+    results.append(check(
+        'compute with caps (cumulative)',
+        lambda label, score: FastVUS(L=L, cumulative=True).compute(label, score, *caps(label)),
+        lambda label, score: plain(VUSNumpy(slope_size=L, cumulative=True).compute)(
+            label, score, max_buffer_per_anomaly_left=caps(label)[0], max_buffer_per_anomaly_right=caps(label)[1])[0],
+    ))
+
     print('ALL OK' if all(results) else 'FAILURES')
     sys.exit(0 if all(results) else 1)
 
