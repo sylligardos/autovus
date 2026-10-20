@@ -17,9 +17,7 @@ import torch
 from tsad_parser import TSADParser
 
 from baselines import compute as baseline
-from vus.fastvus import FastVUS
-from vus.fastvus_gpu import FastVUSGPU
-from vus.autovus import AutoVUS
+from autovus import FastVUS, FastVUSGPU, AutoVUS
 
 L = 128
 SERIES = [

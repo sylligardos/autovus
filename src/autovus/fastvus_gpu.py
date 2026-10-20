@@ -1,6 +1,6 @@
 """FastVUSGPU: vectorized torch implementation of VUS-PR.
 
-    from vus.fastvus_gpu import FastVUSGPU
+    from autovus import FastVUSGPU
     vus = FastVUSGPU(L=128)            # device: cuda if available, else cpu
     value = vus.compute(label, score)
     vus.timings                         # seconds per step of the last compute()

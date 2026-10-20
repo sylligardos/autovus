@@ -21,7 +21,7 @@ import numpy as np
 from tsad_parser import TSADParser
 
 from baselines.tsb_ad.basic_metrics import basic_metricor
-from vus.fastvus import FastVUS
+from autovus import FastVUS
 
 L = 128
 PAIRS = [

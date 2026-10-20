@@ -1,7 +1,9 @@
-"""Migration check for FastVUSGPU on toy arrays only.
+"""Checks for FastVUSGPU on toy arrays only.
 
-References: FastVUS (the exact CPU engine) and the old VUSTorch for the steps
-that did not change. Runs on every available device (cpu, cuda).
+Reference: FastVUS, the exact CPU engine. Runs on every available device
+(cpu, cuda). The segment-max existence is the only approximation: it merges
+two anomalies when their buffered regions touch (distance 2L + 1), where the
+exact rule does not.
 
     conda run -n autovus python src/experiments/check_fastvus_gpu.py
 """
@@ -12,10 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import numpy as np
 import torch
 
-from vus.fastvus import FastVUS
-from vus.fastvus_gpu import FastVUSGPU
-from vus.vus_torch import VUSTorch
-from check_fastvus import toy_cases, plain, L, STEP
+from autovus import FastVUS, FastVUSGPU
+from check_fastvus import toy_cases, L, STEP
 
 DEVICES = ['cpu'] + (['cuda'] if torch.cuda.is_available() else [])
 
@@ -86,33 +86,6 @@ def check_device(device):
     r.append(report('chunked (budget 4 kB) vs unchunked (float32 summation order)', {c: (whole[c], chunked[c]) for c in cases}, 1e-6))
     gpu._update_memory_budget = FastVUSGPU._update_memory_budget.__get__(gpu)
 
-    # Unchanged steps vs the old VUSTorch, on identical inputs.
-    old = VUSTorch(slope_size=L, step=STEP, device=device, max_thresholds=None)
-    ok = True
-    for c, (l, s) in cases.items():
-        lt = torch.tensor(l, dtype=torch.int8, device=device)
-        st = torch.tensor(s, dtype=torch.float64, device=device)
-        _, (start, end) = gpu.anomaly_coordinates(lt)
-        _, (ostart, oend) = plain(old.get_anomalies_coordinates)(lt)
-        mask = gpu.safe_mask(lt, start, end, extra_safe=True)
-        omask = plain(old.create_safe_mask)(lt, ostart, oend, extra_safe=True)
-        dl, dr = gpu.distance_from_anomaly(lt, start, end)
-        buffered = gpu.buffered_labels(lt, dl, dr)
-        thr = gpu.thresholds(buffered[-1], st)   # old torch thresholds differ: float32 cumsum leaks extra (harmless) thresholds on cuda
-        sm = gpu.score_mask(st, thr)
-        tp, fp, pos = gpu.confusion_matrix(buffered, sm)
-        ofn, otp, opos = old.conf_matrix_dyn_plus(buffered, sm)
-        found, total = gpu.existence(buffered, st, thr)
-        ofound, ototal = plain(old.compute_existence_segmax)(buffered, st, thr, normalize=False)
-        same = (torch.equal(start, ostart) and torch.equal(end, oend) and torch.equal(mask, omask)
-                and torch.equal(tp, otp) and torch.equal(pos, opos)
-                and torch.equal(found, ofound) and torch.equal(total, ototal))
-        if not same:
-            print(f"  MISMATCH  unchanged steps vs old VUSTorch on '{c}'")
-            ok = False
-    if ok:
-        print('  ok   unchanged steps vs old VUSTorch (coordinates, mask, confusion matrix, existence)')
-    r.append(ok)
     return r
 
 

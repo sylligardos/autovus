@@ -1,6 +1,6 @@
 """FastVUS: exact CPU implementation of VUS-PR.
 
-    from vus.fastvus import FastVUS
+    from autovus import FastVUS
     vus = FastVUS(L=128)
     value = vus.compute(label, score)
     vus.timings   # seconds per step of the last compute()

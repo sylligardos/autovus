@@ -1,7 +1,6 @@
 """AutoVUS: VUS-PR with a buffer chosen per (anomaly, detection) pair.
 
-    from vus.fastvus import FastVUS          # or fastvus_gpu.FastVUSGPU
-    from vus.autovus import AutoVUS
+    from autovus import FastVUS, AutoVUS     # or FastVUSGPU
     auto = AutoVUS(FastVUS(L=128, cumulative=True))
     result = auto.compute(label, score)      # dict, see score()
     auto.anomalies                           # per-anomaly selection of the last compute()

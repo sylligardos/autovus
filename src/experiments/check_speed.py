@@ -1,4 +1,4 @@
-"""Speed check: new engines against the old classes on one long random series.
+"""Speed check of the engines on one long random series.
 
 In-memory data only (no benchmark files). The series has T points with
 n_anomalies anomalies of ~20 points; the score is noise plus bumps.
@@ -14,10 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import numpy as np
 import torch
 
-from vus.fastvus import FastVUS
-from vus.fastvus_gpu import FastVUSGPU
-from vus.vus_numpy import VUSNumpy
-from vus.vus_torch import VUSTorch
+from autovus import FastVUS, FastVUSGPU
 
 
 def make_series(T, n_anomalies, seed=0):
@@ -52,25 +49,17 @@ def main():
     print(f"T={a.T:,}  anomalies={a.n}  L={a.L}")
 
     print('CPU:')
-    old = VUSNumpy(slope_size=a.L)
-    t_old = bench('old VUSNumpy', lambda: old.compute(label, score)[0][0], a.repeats)
-    t_new = bench('new FastVUS', lambda: FastVUS(L=a.L).compute(label, score), a.repeats)
-    print(f"  new / old = {t_new / t_old:.2f}")
-
+    t_cpu = bench('FastVUS', lambda: FastVUS(L=a.L).compute(label, score), a.repeats)
     if torch.cuda.is_available():
         print('GPU:')
-        oldg = VUSTorch(slope_size=a.L, device='cuda')
-        newg = FastVUSGPU(L=a.L, device='cuda')
+        gpu = FastVUSGPU(L=a.L, device='cuda')
         lt = torch.tensor(label, device='cuda'); st = torch.tensor(score, device='cuda')
 
-        def run_old():
-            v = oldg.compute(lt, st)[0][0]; torch.cuda.synchronize(); return v
-
-        def run_new():
-            v = newg.compute(lt, st); torch.cuda.synchronize(); return v
-        t_oldg = bench('old VUSTorch', run_old, a.repeats)
-        t_newg = bench('new FastVUSGPU', run_new, a.repeats)
-        print(f"  new / old = {t_newg / t_oldg:.2f}")
+        def run():
+            v = gpu.compute(lt, st); torch.cuda.synchronize(); return v
+        t_gpu = bench('FastVUSGPU', run, a.repeats)
+        print(f"  cpu / gpu = {t_cpu / t_gpu:.1f}")
+    print('reference 2026-10-20 (T=2M, 200 anomalies, L=128): FastVUS 818 ms, FastVUSGPU 52 ms; old VUSNumpy 819 ms, old VUSTorch 326 ms')
 
 
 if __name__ == '__main__':
