@@ -603,41 +603,75 @@ class VUSNumpy():
 
     @time_it
     def _select_adaptive_buffer(self, labels, vus_cumulative, T):
-        """Select b* by argmax of the per-buffer (marginal) skill ratio.
+        """Select b* using the delta-VUS skill ratio.
 
-        The cumulative VUS curve is the running mean of AUC over buffers [0, b].
-        De-cumulating it ONCE recovers the per-buffer AUC(b); dividing by the
-        analytical expected-random AUC gives the marginal skill ratio
+        For each buffer b,
 
-            ratio[b] = AUC_detector(b) / E[AUC_random(b)].
+            delta_vus[b] = VUS_detector(b) - VUS_detector(0)
+            delta_den[b] = E[VUS_random(b)] - E[VUS_random(0)]
 
-        b* is its argmax: the buffer width that best captures the detector's
-        skill over random, consistent with VUS ("count any detection within b").
-        The only guard kept here returns b*=0 when no buffer beats random
-        (ratio < 1 everywhere), i.e. there is nothing worth including.
+            ratio[b] = (delta_vus[b] + 1) / (delta_den[b] + 1)
 
-        Returns a dict with the selection ('best') and the curves used, so
-        callers (per-anomaly windows, debug plots) can reuse them.
+        and
+
+            b* = min argmax_b ratio[b].
+
+        Since np.argmax returns the first maximum, it implements the
+        minimum-argmax tie breaking automatically.
+
+        If no b > 0 improves over random (ratio <= 1), return b*=0.
         """
-        denom = self._compute_denom_curve(labels, T, 'analytical', 0, None)
 
-        n_idx    = np.arange(1, self.n_slopes + 1)
-        marg_vus = np.diff(vus_cumulative * n_idx, prepend=0.0)   # per-buffer AUC(b)
-        marg_den = np.diff(denom          * n_idx, prepend=0.0)
-        ratio    = marg_vus / np.clip(marg_den, 1e-10, None)
+        # Expected cumulative VUS of a random detector
+        denom = self._compute_denom_curve(
+            labels, T, 'analytical', 0, None
+        )
 
+        # Change relative to b = 0
+        delta_vus = vus_cumulative - vus_cumulative[0]
+        delta_den = denom - denom[0]
+
+        # Delta-VUS skill ratio
+        ratio = (delta_vus + 1.0) / np.clip(
+            delta_den + 1.0,
+            1e-10,
+            None
+        )
+
+        # np.argmax returns the FIRST maximum:
+        # exactly min argmax_b ratio[b]
         b_idx = int(np.argmax(ratio))
-        # Guard: no buffer beats random -> nothing worth including -> b*=0.
-        if not np.any((ratio - 1.0) > 1e-4):
+
+        # At b=0, ratio is exactly 1.
+        # If no positive buffer does better than random, keep b*=0.
+        if not np.any((ratio[1:] - 1.0) > 1e-4):
             b_idx = 0
 
+        # IMPORTANT:
+        # ratio[0] is now always 1, so it can no longer tell us whether
+        # the anomaly was detected inside its original interval.
+        # Keep the old b=0 detector/random ratio separately.
+        core_ratio = float(
+            vus_cumulative[0] / max(float(denom[0]), 1e-10)
+        )
+
         best = {
-            'buffer_idx': b_idx,
+            'buffer_idx': int(b_idx),
             'buffer_val': int(self.slope_values[b_idx]),
             'ratio':      float(ratio[b_idx]),
             'vus_score':  float(vus_cumulative[b_idx]),
+            'core_ratio': core_ratio,
         }
-        return {'vus': vus_cumulative, 'ratio': ratio, 'denom': denom, 'best': best}
+
+        return {
+            'vus':         vus_cumulative,
+            'ratio':       ratio,
+            'denom':       denom,
+            'delta_vus':   delta_vus,
+            'delta_denom': delta_den,
+            'core_ratio':  core_ratio,
+            'best':        best,
+        }
 
     def _select_window(self, win_label, win_score, score_scale, min_signal_frac):
         """Pick b* for one anomaly window using the current self.reward_side.
