@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from legacy.sylli_metrics import sylli_get_metrics
@@ -212,7 +212,7 @@ def compute_metric_over_dataset(
 
     # Load dataset
     if dataset == 'tsb':
-        tsb = TSBADParser()
+        tsb = TSADParser()
         if testing:
             fnames, timeseries, labels = tsb.load_timeseries(dataset=['NAB'])
             fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]

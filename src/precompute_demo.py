@@ -40,7 +40,7 @@ from tqdm import tqdm
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy, select_best_buffer
 
 try:
@@ -78,7 +78,7 @@ N_SYNTH = len(SYNTH_NAMES)
 
 def load_data(L):
     print('Loading time series and scores...')
-    tsb = TSBADParser()
+    tsb = TSADParser()
     all_files, timeseries, all_labels = tsb.load_timeseries(load_all=True)
     detector_names = tsb.get_detectors()
     fname_to_dataset = dict(zip(tsb.meta['filename'], tsb.meta['dataset']))

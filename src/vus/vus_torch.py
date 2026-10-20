@@ -756,7 +756,7 @@ class VUSTorch():
         seg_max.scatter_reduce_(1, labels_stairs.long(), score[None, :].expand(s, T),
                                 reduce='amax', include_self=True)
         seg_max = seg_max[:, 1:]                           # (s, K)
-
+    
         # n_found[s, t] = number of regions whose max clears threshold t.
         # Materialising the (s, K, t) comparison is not an option: on
         # densely-anomalous series K can reach several thousand (e.g. the Stock

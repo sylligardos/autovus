@@ -27,7 +27,7 @@ _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.join(_SRC_DIR, '..')
 sys.path.insert(0, _SRC_DIR)
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 
 try:
@@ -43,30 +43,30 @@ except ImportError:
 
 @st.cache_data
 def get_dataset_names():
-    return sorted(TSBADParser().get_datasets())
+    return sorted(TSADParser().get_datasets())
 
 
 @st.cache_data
 def get_file_list(dataset: str) -> list[str]:
-    tsb = TSBADParser()
+    tsb = TSADParser()
     return sorted(tsb.meta[tsb.meta['dataset'] == dataset]['filename'].tolist())
 
 
 @st.cache_data
 def get_detector_names() -> list[str]:
-    return TSBADParser().get_detectors()
+    return TSADParser().get_detectors()
 
 
 @st.cache_data
 def load_timeseries(fname: str):
-    tsb = TSBADParser()
+    tsb = TSADParser()
     _, ts, labels = tsb.load_timeseries(filename=[fname])
     return ts[0], labels[0].astype(int)
 
 
 @st.cache_data
 def load_score(fname: str, detector: str):
-    scores, _ = TSBADParser().load_scores(detectors=[detector], filenames=[fname])
+    scores, _ = TSADParser().load_scores(detectors=[detector], filenames=[fname])
     if not scores:
         return None
     return scores[0][0]  # scores[0] is (1, T); first detector row → (T,)

@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 
@@ -88,7 +88,7 @@ if __name__ == '__main__':
 
     # Load real data
     print("Loading TSB data...")
-    tsb = TSBADParser()
+    tsb = TSADParser()
     filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
     filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]
     detectors = tsb.get_detectors()

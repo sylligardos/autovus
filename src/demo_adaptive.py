@@ -134,8 +134,8 @@ def make_taxonomy_figure(scoped):
 @st.cache_data
 def load_timeseries(fname):
     """Raw time series + binary label for one series (via TSB-AD)."""
-    from tsbadparser import TSBADParser
-    _, ts, labels = TSBADParser().load_timeseries(filename=[fname])
+    from tsad_parser import TSADParser
+    _, ts, labels = TSADParser().load_timeseries(filename=[fname])
     return np.asarray(ts[0]), np.asarray(labels[0]).astype(int).ravel()
 
 
@@ -146,8 +146,8 @@ def _anomaly_regions(label):
 
 @st.cache_data
 def load_detector_score(fname, detector):
-    from tsbadparser import TSBADParser
-    scores, _ = TSBADParser().load_scores(detectors=[detector], filenames=[fname])
+    from tsad_parser import TSADParser
+    scores, _ = TSADParser().load_scores(detectors=[detector], filenames=[fname])
     return np.asarray(scores[0][0]).ravel() if scores else None
 
 

@@ -13,7 +13,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 
 
@@ -159,7 +159,7 @@ def main():
 
     limit = 1 if (args.test and args.limit is None) else args.limit
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     # No dataset filter -> load_all=True loads the whole TSB-AD benchmark.
     load_kwargs = {'dataset': args.dataset} if args.dataset else {}
     filenames, ts_list, labels = tsb.load_timeseries(**load_kwargs)

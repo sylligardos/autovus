@@ -32,7 +32,7 @@ import pandas as pd
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from legacy.sylli_metrics import sylli_get_metrics
 
@@ -60,7 +60,7 @@ COLUMNS = [
 
 
 def compute_ranking(dataset, slope_size, testing, experiment_dir, with_community, resume=False):
-    tsb = TSBADParser()
+    tsb = TSADParser()
     if dataset == 'all':
         filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
     else:

@@ -17,7 +17,7 @@ from matplotlib.gridspec import GridSpec
 import torch
 import os
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 
@@ -49,7 +49,7 @@ def global_mask_visualization():
     ffvus = VUSNumpy(buffer_size)
     global_mask_choices = [False, True]
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     fn, _, y = tsb.load_timeseries(dataset=['MGAB'])
     ts_index = max(range(len(y)), key=lambda i: len(y[i]))
     label = y[ts_index]
@@ -658,7 +658,7 @@ def progressive_vus_visualization(
 ):
     """Plot VUS-PR as a curve from slope=0 to slope=L on TSB-AD data."""
     print(f'Loading {n} time series from {dataset}...')
-    tsb = TSBADParser()
+    tsb = TSADParser()
     filenames, timeseries_list, labels = tsb.load_timeseries(dataset=[dataset])
     filenames = filenames[:n]; timeseries_list = timeseries_list[:n]; labels = labels[:n]
     raw_scores, _ = tsb.load_scores_and_delete(filenames, timeseries_list, labels)

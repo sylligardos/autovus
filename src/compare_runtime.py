@@ -4,7 +4,7 @@ Refutes the reviewer's "VUS is probably not the bottleneck" claim by showing tha
 for a large class of detectors, computing the VUS score of a detector's output costs
 more than running the detector itself. AutoVUS removes this cost entirely.
 
-Detector inference times come from the TSB-AD benchmark (via tsbadparser.load_runtime).
+Detector inference times come from the TSB-AD benchmark (via tsad_parser.load_runtime).
 Metric times come from experiments/all_metrics_tsb_def_params/results, per (series, detector).
 """
 
@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = os.path.join(BASE, "experiments", "all_metrics_tsb_def_params", "results")
@@ -45,7 +45,7 @@ def load_data():
             columns={"Metric time": label})
         merged = df if merged is None else merged.merge(df, on=["Time series", "Detector"])
 
-    rt = TSBADParser().load_runtime()[["File Name", "Model Name", "Time Cost"]].rename(
+    rt = TSADParser().load_runtime()[["File Name", "Model Name", "Time Cost"]].rename(
         columns={"File Name": "Time series", "Model Name": "Detector", "Time Cost": DET_NAME})
 
     df = merged.merge(rt, on=["Time series", "Detector"], how="inner")

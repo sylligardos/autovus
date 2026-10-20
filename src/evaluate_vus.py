@@ -18,7 +18,7 @@ import argparse
 from sklearn import metrics as sk_metrics
 from tqdm import tqdm
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from legacy.sylli_metrics import sylli_get_metrics
@@ -49,7 +49,7 @@ def auc_pr_wrapper(label, score, interpolation='stepwise'):
 
 
 def load_scores_aligned(tsb, fnames, timeseries, labels, detector):
-    """Like TSBADParser.load_scores_and_delete but tolerant of score files whose
+    """Like TSADParser.load_scores_and_delete but tolerant of score files whose
     length does not match their time series.
 
     load_scores_and_delete asserts that every score length equals its time
@@ -137,7 +137,7 @@ def _analyze_label(label):
 def evaluate_vus(testing, experiment_dir=None, detector_name=None):
     tic = time.time()
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     all_detectors = tsb.get_detectors()
 
     # Validate detector name and build the list to iterate over

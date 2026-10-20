@@ -600,12 +600,12 @@ def plot_per_anomaly_buffers(fname, timeseries, score, detector, per_anom, out_p
 
 
 def run_real_data(args):
-    from tsbadparser import TSBADParser
+    from tsad_parser import TSADParser
 
     slope_size = args.slope_size
     vus_real = VUSNumpy(slope_size=slope_size, step=1, cumulative=True, global_mask=False)
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     detectors = tsb.get_detectors()
 
     if args.detector:

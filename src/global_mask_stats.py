@@ -20,7 +20,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 
 
@@ -30,7 +30,7 @@ def main():
     args = parser.parse_args()
 
     print("Loading TSB-AD benchmark...")
-    tsb = TSBADParser()
+    tsb = TSADParser()
     _, _, labels = tsb.load_timeseries(load_all=True)
 
     vus = VUSNumpy(

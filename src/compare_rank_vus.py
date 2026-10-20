@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from legacy.sylli_metrics import sylli_get_metrics
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
@@ -19,7 +19,7 @@ def compare_rank(
         experiment_dir,
 ):
     # Load the TSB-AD dataset for all detectors
-    tsb = TSBADParser()
+    tsb = TSADParser()
     if dataset == 'all':
         filenames, timeseries, labels = tsb.load_timeseries(load_all=True)
     else:

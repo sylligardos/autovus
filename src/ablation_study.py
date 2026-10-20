@@ -20,14 +20,16 @@ import time
 from datetime import datetime
 
 import matplotlib
+import seaborn as sns
 matplotlib.use("Agg")  # headless: never pop up a window
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
 import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 from legacy.sylli_metrics import sylli_get_metrics
@@ -325,7 +327,16 @@ def print_summary(summary):
 # written once, on top of the fully-optimized CPU version, so it is not a
 # per-step ablation but the final step of the same progression. We therefore
 # render one continuous staircase: Original VUS -> ... -> AutoVUS (CPU) -> AutoVUS (GPU).
-CPU_PLOT_ORDER = ["Original VUS"] + [c["name"] for c in CPU_CONFIGS]
+# Baseline and the plain "+ Dynamic confusion matrix" step are dropped from the
+# figure: Baseline duplicates Original VUS, and only Dynamic+ is kept for the
+# confusion matrix. All configs still run and are saved; this only trims the plot.
+CPU_PLOT_ORDER = [
+    "Original VUS",
+    "+ Precomputed slopes",
+    "+ Optimized existence",
+    "+ Dynamic+ confusion matrix",
+    "+ Global mask (FF-VUS)",
+]
 # The fully-optimized GPU config (all optimizations, step=1) is the terminal bar.
 GPU_FINAL_CONFIG = "+ Global mask (FF-VUS-GPU step=1)"
 
@@ -334,14 +345,15 @@ GPU_FINAL_CONFIG = "+ Global mask (FF-VUS-GPU step=1)"
 SHORT_LABELS = {
     "Original VUS": "Original\nVUS",
     "Baseline (no optimizations)": "Baseline",
-    "+ Precomputed slopes": "+ Precomp.\nslopes",
+    "+ Precomputed slopes": "+ Buffer\ninjection",
     "+ Optimized existence": "+ Optimized\nexistence",
     "+ Dynamic confusion matrix": "+ Dynamic\nconf.",
-    "+ Dynamic+ confusion matrix": "+ Dynamic+\nconf.",
-    "+ Global mask (FF-VUS)": "+ Global mask\n(AutoVUS)",
-    GPU_FINAL_CONFIG: "+ GPU\n(AutoVUS-GPU)",
+    "+ Dynamic+ confusion matrix": "+ Confusion\nmatrix",
+    "+ Global mask (FF-VUS)": "+ Global mask\n(FastVUS)",
+    GPU_FINAL_CONFIG: "+ GPU\n(FastVUS-GPU)",
 }
-
+# [Sylli] Paul comment: 
+# - Remove baseline because it's confusing and write buffer injection instead of precomputed slopes, fastVUS instead of AutoVus, keep only one dynamic conf. (why two?) and fix its name. The title also has the wrong name, actually drop the title completely
 
 def build_ablation_path(summary):
     """Return the ordered (config, backend, total_time, speedup) staircase.
@@ -367,9 +379,11 @@ def build_ablation_path(summary):
 def plot_ablation(summary, save_path):
     """Render the incremental ablation as a single log-scale staircase.
 
-    CPU steps are shaded blue (light -> dark); the terminal GPU step is a
-    distinct green to mark the switch to the parallel backend.
+    Colors follow the paper palette: the Original VUS reference is red, the
+    incremental FastVUS (CPU) steps are shaded yellow (light -> dark, darkest
+    at the fully-optimized default), and the terminal GPU step is green.
     """
+    sns.set_style("whitegrid")
     path = build_ablation_path(summary)
     if not path:
         return None
@@ -380,15 +394,29 @@ def plot_ablation(summary, save_path):
     speedups = [s for _, _, _, s in path]
     x = np.arange(len(configs))
 
-    n_cpu = sum(b == "CPU" for b in backends)
-    colors = []
-    for i, b in enumerate(backends):
-        if b == "CPU":
-            colors.append(plt.cm.Blues(0.30 + 0.60 * i / max(1, n_cpu - 1)))
-        else:
-            colors.append(plt.cm.Greens(0.80))
+    # Paper palette: VUS red, FastVUS yellow, FastVUS-GPU green.
+    vus_red = "#b02a41"
+    fastvus_gpu_green = "#40da70"
+    fastvus_yellow = to_rgb("#c8b400")
+    # Light -> base yellow ramp; the last (default) FastVUS step is the darkest.
+    yellow_light = tuple(1.0 - 0.55 * (1.0 - c) for c in fastvus_yellow)
+    yellow_cmap = LinearSegmentedColormap.from_list(
+        "fastvus", [yellow_light, fastvus_yellow])
 
-    fig, ax = plt.subplots(figsize=(9.5, 4.6))
+    n_yellow = sum(b == "CPU" and c != "Original VUS"
+                   for c, b in zip(configs, backends))
+    colors = []
+    yi = 0
+    for c, b in zip(configs, backends):
+        if c == "Original VUS":
+            colors.append(vus_red)
+        elif b == "GPU":
+            colors.append(fastvus_gpu_green)
+        else:
+            colors.append(yellow_cmap(yi / max(1, n_yellow - 1)))
+            yi += 1
+
+    fig, ax = plt.subplots(figsize=(6, 3))
     ax.bar(x, times, width=0.72, color=colors, zorder=3)
     ax.set_yscale("log")
     ax.set_ylim(bottom=min(times) / 3, top=max(times) * 3)
@@ -401,25 +429,38 @@ def plot_ablation(summary, save_path):
                     color="#1a1a1a")
 
     ax.set_xticks(x)
-    ax.set_xticklabels([SHORT_LABELS.get(c, c) for c in configs], fontsize=8)
-    ax.set_ylabel("Total time over benchmark (s, log)", fontsize=9)
-    ax.grid(axis="y", which="both", color="#e6e6e6", linewidth=0.6, zorder=0)
+    ax.set_xticklabels([SHORT_LABELS.get(c, c) for c in configs], fontsize=9,
+                       rotation=15, ha="center")
+    # Bold the FastVUS / FastVUS-GPU labels (the named contributions of this work).
+    for tick, cfg in zip(ax.get_xticklabels(), configs):
+        if "FastVUS" in SHORT_LABELS.get(cfg, cfg):
+            tick.set_fontweight("bold")
+    ax.set_ylabel("Total runtime (secs; log scale)", fontsize=9)
+    # ax.grid(axis="y", which="both", color="#e6e6e6", linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
+    ax.grid(visible=False, axis='x')
+    # Keep the full box (top/right spines) that the style otherwise drops.
+    for spine in ax.spines.values():
+        spine.set_visible(True)
 
     n_series = int(summary["n_series"].max())
-    ax.set_title(
-        f"AutoVUS ablation on TSB-AD ({n_series} time series x detector pairs)",
-        fontsize=12, fontweight="bold",
-    )
+    # ax.set_title(
+    #     f"AutoVUS ablation on TSB-AD ({n_series} time series x detector pairs)",
+    #     fontsize=12, fontweight="bold",
+    # )
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, dpi=200, bbox_inches="tight")
-    fig.savefig(save_path.replace(".png", ".pdf"), bbox_inches="tight")
+    fig.savefig(save_path, dpi=200, bbox_inches="tight", pad_inches=0)
+    fig.savefig(save_path.replace(".png", ".pdf"), bbox_inches="tight", pad_inches=0)
+
+    # Also drop a canonical copy under experiments/figures/ for the paper.
+    canonical_pdf = os.path.join("experiments", "figures", "ablation_study.pdf")
+    os.makedirs(os.path.dirname(canonical_pdf), exist_ok=True)
+    fig.savefig(canonical_pdf, bbox_inches="tight", pad_inches=0)
+
     plt.close(fig)
-    print(f"Figure saved to {save_path} (and .pdf)")
+    print(f"Figure saved to {save_path} (and .pdf, and {canonical_pdf})")
     return save_path
 
 
@@ -607,7 +648,7 @@ def main():
 
     # Load data
     print("Loading TSB-AD dataset...")
-    tsb = TSBADParser()
+    tsb = TSADParser()
     if args.test:
         filenames, timeseries, labels = tsb.load_timeseries(dataset=['YAHOO'])
         filenames, timeseries, labels = filenames[:10], timeseries[:10], labels[:10]

@@ -34,7 +34,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 import torch
@@ -395,7 +395,7 @@ def main():
         print(f"Resuming: {len(done)} rows already in CSV, skipping those.")
 
     # ---- Load and sample data ----
-    tsb = TSBADParser()
+    tsb = TSADParser()
     all_dataset_names = tsb.get_datasets()
     all_detectors     = tsb.get_detectors()
 

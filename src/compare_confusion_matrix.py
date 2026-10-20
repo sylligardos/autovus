@@ -23,7 +23,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 
@@ -120,7 +120,7 @@ def compare_over_dataset(
     ):
     # Load dataset
     if dataset == 'tsb':
-        tsb = TSBADParser()
+        tsb = TSADParser()
         if testing:
             fnames, timeseries, labels = tsb.load_timeseries(dataset=['NAB'])
             fnames, timeseries, labels = fnames[:10], timeseries[:10], labels[:10]

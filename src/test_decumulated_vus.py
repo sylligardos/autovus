@@ -117,12 +117,12 @@ def main():
                    help='Output directory for plots')
     args = p.parse_args()
 
-    from tsbadparser import TSBADParser
+    from tsad_parser import TSADParser
 
     vus = VUSNumpy(slope_size=args.slope_size, step=1,
                    cumulative=True, global_mask=False, aggregation='mean')
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     detectors = tsb.get_detectors()
     if args.detector:
         if args.detector not in detectors:

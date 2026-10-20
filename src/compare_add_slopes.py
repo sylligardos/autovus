@@ -12,7 +12,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from tsbadparser import TSBADParser
+from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 
 
@@ -89,7 +89,7 @@ def main():
     parser.add_argument('--n',          type=int, default=5)
     args = parser.parse_args()
 
-    tsb = TSBADParser()
+    tsb = TSADParser()
     n = 1 if args.test else args.n
     filenames, ts_list, labels = tsb.load_timeseries(dataset=[args.dataset])
     filenames, ts_list, labels = filenames[:n], ts_list[:n], labels[:n]
