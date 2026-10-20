@@ -15,6 +15,7 @@ import os
 import time
 from datetime import datetime
 import pandas as pd
+from tsad_parser import TSADParser
 def _analyze_label(label):
     diff = np.diff(label)
     starts = np.where(diff == 1)[0] + 1
@@ -162,7 +163,7 @@ def generate_synthetic_dataset(
         )
         
         file_name = f"syn_len_{comb['length']}_n_{comb['n_anomalies']}_avglen_{comb['avg_anomaly_length']}.npz"
-        save_path = os.path.join('data', 'synthetic', save_dir)
+        save_path = os.path.join(TSADParser.benchmarks_root(), '_synthetic', save_dir)
         os.makedirs(save_path, exist_ok=True)
         save_path = os.path.join(save_path, file_name)
         np.savez_compressed(save_path, label=label, score=score)

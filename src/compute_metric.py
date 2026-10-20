@@ -58,7 +58,7 @@ TORCH_SORT_MAX = 2**31 - 1
 
 
 def load_synthetic(dataset, testing=False, iterator=False):
-    dataset_path = os.path.join('data', 'synthetic', dataset)
+    dataset_path = os.path.join(TSADParser.benchmarks_root(), '_synthetic', dataset)
     files = sorted(os.listdir(dataset_path), key=natural_keys)
 
     for file in tqdm(files, desc="Loading synthetic"):
@@ -395,7 +395,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.dataset == 'all_synthetic':
-        synthetic_dir = os.path.join('data', 'synthetic')
+        synthetic_dir = os.path.join(TSADParser.benchmarks_root(), '_synthetic')
         datasets = os.listdir(synthetic_dir)
         datasets.sort()
     else:
