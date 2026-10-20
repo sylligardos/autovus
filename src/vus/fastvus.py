@@ -139,25 +139,22 @@ class FastVUS:
     def _ramp(self, dist, cap):
         """Ramp of one side for buffers step..L, shape (n_buffers - 1, T).
 
-        A point at distance d from the boundary gets 1 - (1 - zita) * d / b
-        for every buffer b >= d, else 0. dist = inf (no boundary on this side)
-        stays 0. cap (shape (T,) or None) limits each point's buffer to
-        min(b, cap[t]); None means the uniform buffer.
+        A point at distance d from the boundary gets
+            sqrt(1 - (1 - zita^2) * d / b)
+        for every buffer b >= d, else 0: the curve of the original VUS, which
+        equals zita at the outer end of the buffer. dist = inf (no boundary on
+        this side) stays 0. cap (shape (T,) or None) limits each point's
+        buffer to min(b, cap[t]); None means the uniform buffer.
         """
-        # TODO (B2): linear ramp, to become the curved one once the engine matches the old code.
         T = len(dist)
         out = np.zeros((self.n_buffers - 1, T))
-        b = self.buffers[1:, None]           # (n_buffers - 1, 1)
-        d = dist[None, :]                    # (1, T)
-        if cap is None:
-            reached = b >= d
-            np.subtract(1.0, (1.0 - self.zita) / b * d, out=out, where=reached)
-        else:
-            b_eff = np.minimum(b, cap[None, :])
-            reached = (b_eff >= d) & (b_eff > 0)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                ramp = 1.0 - (1.0 - self.zita) * d / b_eff
-            np.copyto(out, ramp, where=reached)
+        b = self.buffers[1:, None]                                   # (n_buffers - 1, 1)
+        d = dist[None, :]                                            # (1, T)
+        b_eff = b if cap is None else np.minimum(b, cap[None, :])
+        reached = (b_eff >= d) & (b_eff > 0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ramp = np.sqrt(1.0 - (1.0 - self.zita ** 2) * d / b_eff)
+        np.copyto(out, ramp, where=reached)
         return out
 
     @timed
