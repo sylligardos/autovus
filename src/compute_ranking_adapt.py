@@ -7,7 +7,7 @@ For every (dataset, time series, detector) it runs the two-step adaptive pipelin
                    detection taxonomy (early/late/exact/missed) per anomaly
   2. scoring    -> score_adapt with the asymmetric per-side caps (raw VUS, ratio_*,
                    Adjusted VUS skill_*)
-plus the community VUS baseline (legacy sylli implementation, same L), and writes
+plus the community VUS baseline (upstream TSB-AD code via src/baselines, same L), and writes
 one long-format row per pair to a CSV. Floating-point score dust is floored once
 (VUSNumpy.floor_dust) so selection and scoring use the identical cleaned score.
 Runtimes (selection / scoring / baseline) are recorded so we can see whether the
@@ -34,7 +34,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
-from legacy.sylli_metrics import sylli_get_metrics
+from baselines import compute as baseline_compute
 
 
 def _n_anomalies(label):
@@ -152,7 +152,7 @@ def compute_ranking(dataset, slope_size, testing, experiment_dir, with_community
             community_vus, community_time = (np.nan, np.nan)
             if with_community:
                 t2 = perf_counter()
-                community_vus = sylli_get_metrics(label, score, 'vus', slope_size, existence=True)
+                community_vus = baseline_compute('vus', label, score, L=slope_size)
                 if isinstance(community_vus, tuple):
                     community_vus = community_vus[0]
                 community_time = perf_counter() - t2
@@ -212,7 +212,7 @@ if __name__ == '__main__':
     p.add_argument('--slope-size', type=int, default=256, help='Buffer L (default 256)')
     p.add_argument('--test', action='store_true', help='Limit to 2 series for a quick check')
     p.add_argument('--experiment', type=str, default=None, help='Output subdir under experiments/')
-    p.add_argument('--no-community', action='store_true', help='Skip the legacy VUS baseline')
+    p.add_argument('--no-community', action='store_true', help='Skip the upstream VUS baseline')
     p.add_argument('--resume', action='store_true', help='Skip series already present in the output CSV')
     args = p.parse_args()
 

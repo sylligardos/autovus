@@ -1,7 +1,0 @@
-Score,AUC-PR,VUS-PR,AutoVUS,b*,Case,AUC,VUS
-S1,0.428,0.903,0.689,"(3,2,2,4)",Dense anomalies,,
-S2,0.615,0.919,0.549,"(3,0,0,4)",Dense anomalies,,
-S1,,,0.919,"(3,2,3)",Boundary-only firing,0.842,0.975
-S2,,,0.455,"(9,9,9)",Boundary-only firing,0.215,0.705
-S1,0.861,0.729,0.335,"(0,0,0)",Long anomaly vs. spikes,,
-S2,0.606,0.897,0.387,"(0,0,0)",Long anomaly vs. spikes,,

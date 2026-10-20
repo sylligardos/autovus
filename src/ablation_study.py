@@ -32,7 +32,7 @@ from tqdm import tqdm
 from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
-from legacy.sylli_metrics import sylli_get_metrics
+from baselines import compute as baseline_compute
 
 
 def _analyze_label(label):
@@ -199,7 +199,7 @@ def run_original_vus(filenames, labels, scores, slope_size, config_name="Origina
             label = label[:min_len]
             score = score[:min_len]
 
-        metric_value, metric_time = sylli_get_metrics(label, score, 'vus', slope_size, existence=True)
+        metric_value, metric_time = baseline_compute('vus', label, score, L=slope_size)
 
         row = {
             "Config": config_name,

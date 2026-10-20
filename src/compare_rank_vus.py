@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 
 from tsad_parser import TSADParser
-from legacy.sylli_metrics import sylli_get_metrics
+from baselines import compute as baseline_compute
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
 import os
@@ -68,7 +68,7 @@ def compare_rank(
                     else:
                         raise ValueError(f"Wrong metric {metric}")
             elif metric == 'vus':
-                curr_vus, curr_vus_time = sylli_get_metrics(label, score, 'vus', 512, existence=True)
+                curr_vus, curr_vus_time = baseline_compute('vus', label, score, L=512)
                 results.append({'Time series': filename, 'Metric': 'VUS', 'Step': 1, 'Detector': detector, 'Score': curr_vus, 'Runtime': curr_vus_time})
             else:
                 raise ValueError(f"Wrong metric {metric}")

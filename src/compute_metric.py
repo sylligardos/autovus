@@ -22,7 +22,7 @@ from tqdm import tqdm
 from tsad_parser import TSADParser
 from vus.vus_numpy import VUSNumpy
 from vus.vus_torch import VUSTorch
-from legacy.sylli_metrics import sylli_get_metrics
+from baselines import compute as baseline_compute
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +168,9 @@ def compute_metric(
                 curr_result.update({'Slope size': slope_size})
             if metric == 'vus':
                 curr_result.update({'Existence': True if existence != 'None' else False})
-            metric_value, metric_time = sylli_get_metrics(
-                label, score, metric, slope_size,
-                existence=True if existence != 'None' else False,
-                **({"max_thresholds": n_thresholds} if n_thresholds is not None else {}),
+            metric_value, metric_time = baseline_compute(
+                metric, label, score, L=slope_size,
+                **({"thre": n_thresholds} if n_thresholds is not None and metric in ('vus', 'range_auc') else {}),
             )
             if metric == 'softed':
                 metric_value, metric_time = metric_value
