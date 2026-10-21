@@ -164,13 +164,15 @@ def figure(label, score, L, title, path, series=None, max_anomalies=4):
             if row == 0 and col == 1:
                 ax2.legend(loc='upper left', fontsize=8)
         x = np.arange(lo, hi)
-        if series is not None:
-            ax[0].plot(x, series[lo:hi], color='k', lw=0.6, alpha=0.6, label='series')
-        ax[0].plot(x, ws, color='C3', lw=0.9, label='score')
-        ax[0].fill_between(x, 0, wl * ws.max() if ws.max() > 0 else wl, color='k', alpha=0.15, label='anomaly')
+        if series is not None:                                # both on a [0, 1] scale within the window
+            sw = series[lo:hi]
+            ax[0].plot(x, (sw - sw.min()) / (np.ptp(sw) or 1), color='k', lw=0.6, alpha=0.5, label='series (scaled)')
+        ws_plot = ws / (ws.max() or 1)
+        ax[0].plot(x, ws_plot, color='C3', lw=0.9, label='score (scaled)')
+        ax[0].fill_between(x, 0, wl, color='k', alpha=0.15, label='anomaly')
         for name in RULES:
             bl, br = picks[('left', name)], picks[('right', name)]
-            y = {'paper': -0.05, 'cumulative': -0.1, 'ratio': -0.15}[name] * (ws.max() if ws.max() > 0 else 1)
+            y = {'paper': -0.05, 'cumulative': -0.1, 'ratio': -0.15}[name]
             ax[0].plot([s - bl, e + br], [y, y], color=COLORS[name], lw=3, solid_capstyle='butt', label=f"{name} buffer ({bl}, {br})")
         ax[0].set_xlim(lo, hi); ax[0].set_title(f"window of anomaly {row + 1} [{s}, {e}]"); ax[0].legend(loc='upper right', fontsize=7)
     fig.suptitle(title); fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
