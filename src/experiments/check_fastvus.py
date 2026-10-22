@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/
 
 import numpy as np
+from sklearn.metrics import roc_auc_score
 
 from autovus import FastVUS
 from baselines.tsb_ad.basic_metrics import basic_metricor
@@ -197,6 +198,61 @@ def check_compute_properties():
     return r
 
 
+def check_roc():
+    """VUS-ROC. Even windows exact vs upstream with all thresholds, for
+    continuous and for tied (quantized) scores; L = 0 with one anomaly equals
+    sklearn's AUC-ROC (existence is then 1 wherever TPR > 0); properties."""
+    exact = FastVUS(L=L, step=STEP, max_thresholds=None, cumulative=True)
+    ok = True
+    print('  VUS-ROC vs upstream (all unique thresholds on both sides):')
+    for quant in (None, 20):
+        for case, (label, score) in toy_cases().items():
+            if label.all():
+                continue
+            if quant:
+                score = np.floor(score * quant) / quant
+            cum = exact.compute(label, score, metric='roc')
+            tpr, fpr, _, _, theirs, _ = upstream.RangeAUC_volume_opt_mem(label, score, windowSize=2 * L, thre=len(score))
+            their_areas = np.array([np.dot(f[1:] - f[:-1], (t[1:] + t[:-1]) / 2) for t, f in zip(tpr, fpr)])
+            tag = 'continuous' if quant is None else f'{quant} levels'
+            line = f"    {case:30s} {tag:10s} ours {cum[-1]:.6f}  upstream {theirs:.6f}  diff {cum[-1] - theirs:+.6f}"
+            if no_overlap(label):
+                even = np.abs(decumulate(cum) - their_areas[::2]).max()
+                line += f"  even-window max diff {even:.1e}"
+                if even > 1e-12:
+                    ok = False
+                    line += '  <-- should be exact'
+            print(line)
+
+    print('  VUS-ROC at L = 0, one anomaly, vs sklearn AUC-ROC (continuous and tied scores):')
+    rng = np.random.default_rng(1)
+    worst = 0.0
+    for quant in (None, 10, 3):
+        for T, (a, b) in [(400, (100, 110)), (400, (0, 5)), (400, (393, 400)), (1000, (500, 501))]:
+            label = np.zeros(T, int); label[a:b] = 1
+            score = rng.random(T)
+            if quant:
+                score = np.floor(score * quant) / quant
+            for gm in (True, False):
+                ours = FastVUS(L=0, step=0, global_mask=gm, max_thresholds=None).compute(label, score, metric='roc')
+                worst = max(worst, abs(ours - roc_auc_score(label, score)))
+    print(f"    {'ok ' if worst <= 1e-12 else 'MISMATCH'}  max diff {worst:.1e} over 24 cases")
+    ok = ok and worst <= 1e-12
+
+    r = [ok]
+    cum = FastVUS(L=L, step=STEP, cumulative=True)
+    r.append(check('roc: cumulative[-1] == plain value',
+                   lambda l, s: cum.compute(l, s, metric='roc')[-1] if not l.all() else 0,
+                   lambda l, s: new.compute(l, s, metric='roc') if not l.all() else 0, tol=1e-12))
+    r.append(check('roc: global mask changes nothing',
+                   lambda l, s: new.compute(l, s, metric='roc') if not l.all() else 0,
+                   lambda l, s: FastVUS(L=L, step=STEP, global_mask=False).compute(l, s, metric='roc') if not l.all() else 0, tol=1e-12))
+    r.append(check("roc: metric='both' == ('pr', 'roc')",
+                   lambda l, s: new.compute(l, s, metric='both') if not l.all() else 0,
+                   lambda l, s: (new.compute(l, s), new.compute(l, s, metric='roc')) if not l.all() else 0))
+    return r
+
+
 def main():
     results = []
     print('vs upstream (buffer curve):')
@@ -205,6 +261,8 @@ def main():
     results += check_compute_vs_upstream()
     print('internal properties:')
     results += check_compute_properties()
+    print('VUS-ROC:')
+    results += check_roc()
     print('ALL OK' if all(results) else 'FAILURES')
     sys.exit(0 if all(results) else 1)
 

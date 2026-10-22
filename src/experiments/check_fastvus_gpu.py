@@ -79,11 +79,25 @@ def check_device(device):
         r.append(report(f'compute (side {side}) vs FastVUS, non-overlapping cases',
                         {c: (a.compute(l, s), b.compute(l, s)) for c, (l, s) in cases.items() if no_overlap(l)}, 1e-6))
 
+    # VUS-ROC: same comparison, continuous and tied (quantized) scores.
+    roc_cases = {c: (l, s) for c, (l, s) in cases.items() if not l.all()}
+    roc_cases.update({c + ', 20 levels': (l, np.floor(s * 20) / 20) for c, (l, s) in roc_cases.items()})
+    r.append(report('roc vs FastVUS, non-overlapping cases',
+                    {c: (cpu.compute(l, s, metric='roc'), gpu.compute(l, s, metric='roc')) for c, (l, s) in roc_cases.items() if no_overlap(l)}, 1e-6))
+    r.append(report('roc vs FastVUS, overlapping cases (existence merge approximation)',
+                    {c: (cpu.compute(l, s, metric='roc'), gpu.compute(l, s, metric='roc')) for c, (l, s) in roc_cases.items() if not no_overlap(l)}, 1e-2))
+    a = FastVUS(L=L, step=STEP, max_thresholds=None, cumulative=True); b = FastVUSGPU(L=L, step=STEP, max_thresholds=None, device=device, cumulative=True)
+    r.append(report('roc (cumulative) vs FastVUS, non-overlapping cases',
+                    {c: (a.compute(l, s, metric='roc'), b.compute(l, s, metric='roc')) for c, (l, s) in roc_cases.items() if no_overlap(l)}, 1e-6))
+
     # Chunking: a tiny memory budget forces many chunks; the result must not move.
     whole = {c: gpu.compute(l, s) for c, (l, s) in cases.items()}
+    whole_roc = {c: gpu.compute(l, s, metric='roc') for c, (l, s) in roc_cases.items()}
     gpu._update_memory_budget = lambda: setattr(gpu, 'memory_budget', 4000)
     chunked = {c: gpu.compute(l, s) for c, (l, s) in cases.items()}
+    chunked_roc = {c: gpu.compute(l, s, metric='roc') for c, (l, s) in roc_cases.items()}
     r.append(report('chunked (budget 4 kB) vs unchunked (float32 summation order)', {c: (whole[c], chunked[c]) for c in cases}, 1e-6))
+    r.append(report('roc chunked (budget 4 kB) vs unchunked', {c: (whole_roc[c], chunked_roc[c]) for c in roc_cases}, 1e-6))
     gpu._update_memory_budget = FastVUSGPU._update_memory_budget.__get__(gpu)
 
     return r

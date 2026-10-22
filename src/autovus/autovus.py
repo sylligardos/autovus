@@ -23,7 +23,11 @@ import numpy as np
 
 
 class AutoVUS:
-    def __init__(self, engine, dust_floor=1e-6, min_signal_frac=1e-3):
+    RULES = ('cumulative', 'paper', 'ratio')
+    SIDES = ('per_side', 'symmetric')
+
+    def __init__(self, engine, dust_floor=1e-6, min_signal_frac=1e-3,
+                 rule='cumulative', sides='per_side', select_zita=None):
         """
         Args:
             engine: FastVUS or FastVUSGPU built with cumulative=True.
@@ -32,12 +36,31 @@ class AutoVUS:
                 0 or None disables it.
             min_signal_frac (float): a window whose max score is below this
                 fraction of the series' max score is treated as signal-free.
+            rule (str): the selection rule, see select_buffer.
+                'cumulative'  (C(b) - C(0) + 1) / (G(b) - G(0) + 1)  on the cumulative curves
+                'paper'       (A(b) - A(0) + 1) / (g(b) - g(0) + 1)  on the marginal curves
+                'ratio'       A(b) / g(b)                            on the marginal curves
+            sides (str): 'per_side' selects a buffer for the left and the
+                right side of every anomaly separately; 'symmetric' selects
+                one buffer used on both sides.
+            select_zita (float or None): zita used by the engine during
+                selection only (1.0 = flat buffer); None keeps the engine's
+                zita. Scoring always uses the engine's zita.
+        AutoVUS is defined over VUS-PR only; the engines' VUS-ROC has no
+        random baseline here (see TRACKER.md).
         """
         if not engine.cumulative:
             raise ValueError("AutoVUS needs an engine built with cumulative=True")
+        if rule not in self.RULES:
+            raise ValueError(f"rule={rule!r} must be one of {self.RULES}")
+        if sides not in self.SIDES:
+            raise ValueError(f"sides={sides!r} must be one of {self.SIDES}")
         self.engine = engine
         self.dust_floor = dust_floor
         self.min_signal_frac = min_signal_frac
+        self.rule = rule
+        self.sides = sides
+        self.select_zita = select_zita
         self.anomalies = []
 
     @property
@@ -54,7 +77,7 @@ class AutoVUS:
         at buffer b is the mass of the buffered label over T, and the
         cumulative curve is its running mean over buffers.
         """
-        vus = np.asarray(self.engine.compute(label, score, cap_left, cap_right))
+        vus = np.asarray(self.engine.compute(label, score, cap_left, cap_right, metric='pr'))
         mass = np.asarray(self.engine.label_mass) / len(label)
         random = np.cumsum(mass) / np.arange(1, len(mass) + 1)
         return vus, random
@@ -68,20 +91,28 @@ class AutoVUS:
     # ------------------------------------------------------------------
     # Selection
     # ------------------------------------------------------------------
+    def rule_curve(self, vus, random):
+        """The selection rule's curve over b, from the cumulative curves."""
+        if self.rule == 'cumulative':
+            return (vus - vus[0] + 1.0) / np.clip(random - random[0] + 1.0, 1e-10, None)
+        A, g = self.decumulate(vus), self.decumulate(random)
+        if self.rule == 'paper':
+            return (A - A[0] + 1.0) / np.clip(g - g[0] + 1.0, 1e-10, None)
+        return A / np.clip(g, 1e-10, None)
+
     def select_buffer(self, vus, random):
         """b* from the cumulative curves of the detector and of a random detector.
 
-        For each buffer b,
-            ratio[b] = (vus[b] - vus[0] + 1) / (random[b] - random[0] + 1)
-        is the gain of the detector relative to the gain of a random detector
-        when the buffer grows from 0 to b. b* is the first argmax of the ratio,
-        or 0 when no buffer beats random (ratio <= 1 everywhere).
+        The rule (see __init__) gives a curve over b whose value at b is the
+        gain of the detector relative to the gain of a random detector. b* is
+        the first argmax of the curve, or 0 when no buffer beats b = 0
+        (curve[b] <= curve[0] everywhere).
         core_ratio = vus[0] / random[0] says whether the anomaly is detected
         inside its own interval at all.
         """
-        ratio = (vus - vus[0] + 1.0) / np.clip(random - random[0] + 1.0, 1e-10, None)
+        ratio = self.rule_curve(vus, random)
         idx = int(np.argmax(ratio))
-        if not np.any(ratio[1:] - 1.0 > 1e-4):
+        if not np.any(ratio[1:] - ratio[0] > 1e-4):
             idx = 0
         return {
             'buffer_idx': idx,
@@ -103,11 +134,12 @@ class AutoVUS:
 
         # A buffer cannot extend past the window: limit b* to the room there.
         inside = np.flatnonzero(label > 0)
-        room = int(inside[0]) if side == 'left' else int(len(label) - 1 - inside[-1])
+        room_left, room_right = int(inside[0]), int(len(label) - 1 - inside[-1])
+        room = {'left': room_left, 'right': room_right, 'both': min(room_left, room_right)}[side]
         if best['buffer_val'] > room:
             allowed = self.buffers <= room
             idx = int(np.argmax(np.where(allowed, ratio, -np.inf)))
-            if not np.any(ratio[allowed] - 1.0 > 1e-4):
+            if not np.any(ratio[allowed] - ratio[0] > 1e-4):
                 idx = 0
             best.update(buffer_idx=idx, buffer_val=int(self.buffers[idx]), ratio=float(ratio[idx]), vus=float(vus[idx]))
         best['room'] = room
@@ -141,8 +173,10 @@ class AutoVUS:
     def select(self, label, score):
         """Per-anomaly buffers: list of dicts with start, end, window, left, right, detection.
 
-        'left' and 'right' are select_buffer dicts (plus 'room'). Also stored
-        in self.anomalies.
+        'left' and 'right' are select_buffer dicts (plus 'room'). With
+        sides='symmetric' they are the same dict (one selection with
+        side='both') and 'detection' is 'exact', 'missed' or 'both'. Also
+        stored in self.anomalies.
         """
         label = np.asarray(label)
         score = self.floor_dust(score, self.dust_floor)
@@ -150,19 +184,29 @@ class AutoVUS:
         start, end = self._coordinates(label)
         score_scale = float(np.max(score)) if score.size else 0.0
 
-        side = self.engine.side
+        side, zita = self.engine.side, self.engine.zita
+        if self.select_zita is not None:
+            self.engine.zita = self.select_zita
         anomalies = []
         try:
             for k in range(len(start)):
                 lo = int((end[k - 1] + start[k]) // 2) if k > 0 else 0
                 hi = int((end[k] + start[k + 1]) // 2) if k < len(start) - 1 else T
                 anomaly = {'start': int(start[k]), 'end': int(end[k]), 'window': (lo, hi)}
-                anomaly['left'] = self._select_side(label[lo:hi], score[lo:hi], 'left', score_scale)
-                anomaly['right'] = self._select_side(label[lo:hi], score[lo:hi], 'right', score_scale)
-                anomaly['detection'] = self.classify_detection(anomaly)
+                if self.sides == 'per_side':
+                    anomaly['left'] = self._select_side(label[lo:hi], score[lo:hi], 'left', score_scale)
+                    anomaly['right'] = self._select_side(label[lo:hi], score[lo:hi], 'right', score_scale)
+                    anomaly['detection'] = self.classify_detection(anomaly)
+                else:
+                    both = self._select_side(label[lo:hi], score[lo:hi], 'both', score_scale)
+                    anomaly['left'] = anomaly['right'] = both
+                    if both['buffer_val'] == 0:
+                        anomaly['detection'] = 'exact' if both['core_ratio'] > 1.0 else 'missed'
+                    else:
+                        anomaly['detection'] = 'both'
                 anomalies.append(anomaly)
         finally:
-            self.engine.side = side
+            self.engine.side, self.engine.zita = side, zita
         self.anomalies = anomalies
         return anomalies
 

@@ -1,8 +1,9 @@
-"""FastVUSGPU: vectorized torch implementation of VUS-PR.
+"""FastVUSGPU: vectorized torch implementation of VUS-PR and VUS-ROC.
 
     from autovus import FastVUSGPU
     vus = FastVUSGPU(L=128)            # device: cuda if available, else cpu
-    value = vus.compute(label, score)
+    value = vus.compute(label, score)                 # VUS-PR
+    value = vus.compute(label, score, metric='roc')   # VUS-ROC
     vus.timings                         # seconds per step of the last compute()
 
 Same steps and conventions as FastVUS (see fastvus.py), with two differences:
@@ -326,13 +327,57 @@ class FastVUSGPU:
         recall[:, 1:] *= existence
         return precision, recall
 
-    @timed
-    def auc(self, recall, precision):
-        """Stepwise area under each PR curve, mean or running mean over buffers; see FastVUS."""
-        area = torch.sum((recall[:, 1:] - recall[:, :-1]) * precision[:, 1:], dim=1)
+    def _mean(self, area):
+        """Mean over all buffers, or with cumulative=True the running mean; see FastVUS."""
         if self.cumulative:
             return torch.cumsum(area, 0) / torch.arange(1, len(area) + 1, device=self.device)
         return area.mean()
+
+    @timed
+    def auc(self, recall, precision):
+        """Stepwise area under each PR curve, averaged over the buffers (VUS-PR); see FastVUS."""
+        area = torch.sum((recall[:, 1:] - recall[:, :-1]) * precision[:, 1:], dim=1)
+        return self._mean(area)
+
+    # ------------------------------------------------------------------
+    # Step 9 (metric='roc' only): ROC curves and their area
+    # ------------------------------------------------------------------
+    @timed
+    def tied_false_positives(self, buffered, score, thresholds):
+        """False positives admitted exactly at each threshold, (n_buffers, n_thresholds); see FastVUS.
+
+        Computed per chunk and summed by the caller; the ties outside the
+        global mask are added by tied_outside.
+        """
+        n = thresholds.numel()
+        pos = torch.searchsorted(-thresholds, -score)
+        hit = pos < n
+        hit = hit & (thresholds[torch.clamp(pos, max=n - 1)] == score)
+        idx = pos[hit]
+        n_tied = torch.bincount(idx, minlength=n).to(torch.float64)
+        tp_tied = torch.zeros((self.n_buffers, n), dtype=torch.float64, device=self.device)
+        tp_tied.index_add_(1, idx, buffered[:, hit].to(torch.float64))
+        return n_tied[None, :] - tp_tied
+
+    @timed
+    def tied_outside(self, score_outside, thresholds):
+        """Per-threshold count of points outside the global mask equal to it."""
+        score_sorted, _ = torch.sort(score_outside)
+        return (torch.searchsorted(score_sorted, thresholds, side='right')
+                - torch.searchsorted(score_sorted, thresholds, side='left')).to(torch.float64)
+
+    @timed
+    def roc(self, recall, fp, positives, fp_tied, T, P):
+        """Area under each ROC curve, averaged over the buffers (VUS-ROC); see FastVUS.roc."""
+        first = torch.full((self.n_buffers, 1), float(T - P), dtype=torch.float64, device=self.device)
+        negatives = torch.cat((first, T - positives.to(torch.float64)), dim=1)
+        zeros = torch.zeros((self.n_buffers, 1), dtype=torch.float64, device=self.device)
+        fpr = torch.cat((zeros, fp / negatives[:, 1:]), dim=1)
+        before = (fp - fp_tied) / negatives[:, :-1]
+        tpr = recall.to(torch.float64)
+        flat = torch.sum((fpr[:, 1:] - fpr[:, :-1]) * tpr[:, :-1], dim=1) + (1 - fpr[:, -1]) * tpr[:, -1]
+        diagonal = torch.sum((fpr[:, 1:] - before) * (tpr[:, 1:] - tpr[:, :-1]) / 2, dim=1)
+        return self._mean(flat + diagonal)
 
     # ------------------------------------------------------------------
     # Chunking
@@ -360,15 +405,17 @@ class FastVUSGPU:
     # ------------------------------------------------------------------
     # The metric
     # ------------------------------------------------------------------
-    def compute(self, label, score, cap_left=None, cap_right=None):
-        """VUS-PR of a score against a binary label; same interface as FastVUS.compute.
+    def compute(self, label, score, cap_left=None, cap_right=None, metric='pr'):
+        """VUS-PR or VUS-ROC of a score against a binary label; same interface as FastVUS.compute.
 
-        Returns a float, or with cumulative=True a numpy array with one VUS-PR
-        per buffer length in self.buffers. See FastVUS.compute for timings
-        and label_mass.
+        Returns a float, or with cumulative=True a numpy array with one value
+        per buffer length in self.buffers (a tuple of the two for
+        metric='both'). See FastVUS.compute for timings and label_mass.
         """
         if (cap_left is None) != (cap_right is None):
             raise ValueError("pass both cap_left and cap_right, or neither")
+        if metric not in ('pr', 'roc', 'both'):
+            raise ValueError(f"metric={metric!r} must be 'pr', 'roc' or 'both'")
         self.timings = {}
         self._update_memory_budget()
         label = self._tensor(label, torch.int8)
@@ -376,7 +423,10 @@ class FastVUSGPU:
         if label.numel() != score.numel():
             raise ValueError(f"label has {label.numel()} points, score {score.numel()}")
         if not bool(label.any()):
-            raise ValueError("label has no anomaly: VUS-PR is undefined")
+            raise ValueError("label has no anomaly: VUS is undefined")
+        T, P = label.numel(), int(label.sum())
+        if metric != 'pr' and P == T:
+            raise ValueError("label has no normal point: VUS-ROC is undefined")
 
         _, (start, end) = self.anomaly_coordinates(label)
         mask = self.safe_mask(label, start, end, extra_safe=self.global_mask)
@@ -392,8 +442,10 @@ class FastVUSGPU:
         thresholds = self.thresholds(self.widest_label(label, dist_left, dist_right, cap_left, cap_right), score)
         if self.global_mask:
             fp_outside = self.false_positives_outside(score_outside, thresholds)
+            if metric != 'pr':
+                tied_outside = self.tied_outside(score_outside, thresholds)
 
-        tp = fp = positives = found = total = 0
+        tp = fp = positives = found = total = fp_tied = 0
         label_mass = 0
         prev = 0
         for bound in self.chunk_bounds(label, mask, len(thresholds), start.numel()):
@@ -406,11 +458,22 @@ class FastVUSGPU:
             found_c, total_c = self.existence(buffered, score_c, thresholds)
             tp, fp, positives = tp + tp_c, fp + fp_c, positives + positives_c
             found, total = found + found_c, total + total_c
+            if metric != 'pr':
+                fp_tied = fp_tied + self.tied_false_positives(buffered, score_c, thresholds)
             prev = bound
 
         self.label_mass = label_mass.cpu().numpy()
         if self.global_mask:
             fp = fp + fp_outside
         precision, recall = self.precision_recall(tp, fp, positives, found / total)
-        result = self.auc(recall, precision)
-        return result.cpu().numpy() if self.cumulative else float(result)
+
+        def out(result):
+            return result.cpu().numpy() if self.cumulative else float(result)
+        if metric == 'pr':
+            return out(self.auc(recall, precision))
+        if self.global_mask:
+            fp_tied = fp_tied + tied_outside
+        roc = out(self.roc(recall, fp, positives, fp_tied, T, P))
+        if metric == 'roc':
+            return roc
+        return out(self.auc(recall, precision)), roc

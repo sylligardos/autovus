@@ -1,12 +1,14 @@
-"""FastVUS: exact CPU implementation of VUS-PR.
+"""FastVUS: exact CPU implementation of VUS-PR and VUS-ROC.
 
     from autovus import FastVUS
     vus = FastVUS(L=128)
-    value = vus.compute(label, score)
+    value = vus.compute(label, score)                 # VUS-PR
+    value = vus.compute(label, score, metric='roc')   # VUS-ROC
     vus.timings   # seconds per step of the last compute()
 
 L is the buffer length added on each side of every anomaly. The buffers
-0, step, 2*step, ..., L are all evaluated; VUS-PR is the mean AUC-PR over them.
+0, step, 2*step, ..., L are all evaluated; VUS-PR (VUS-ROC) is the mean
+AUC-PR (AUC-ROC) over them.
 """
 import functools
 import math
@@ -369,32 +371,82 @@ class FastVUS:
         recall[:, 1:] *= existence
         return precision, recall
 
-    @timed
-    def auc(self, recall, precision):
-        """Stepwise area under each PR curve, averaged over the buffers.
-
-        Returns the mean over all buffers, or with cumulative=True the running
-        mean: element i is VUS-PR with L = self.buffers[i].
-        """
-        area = np.sum((recall[:, 1:] - recall[:, :-1]) * precision[:, 1:], axis=1)
+    def _mean(self, area):
+        """Mean over all buffers, or with cumulative=True the running mean:
+        element i is the VUS with L = self.buffers[i]."""
         if self.cumulative:
             return np.cumsum(area) / np.arange(1, len(area) + 1)
         return area.mean()
 
+    @timed
+    def auc(self, recall, precision):
+        """Stepwise area under each PR curve, averaged over the buffers (VUS-PR)."""
+        area = np.sum((recall[:, 1:] - recall[:, :-1]) * precision[:, 1:], axis=1)
+        return self._mean(area)
+
+    # ------------------------------------------------------------------
+    # Step 9 (metric='roc' only): ROC curves and their area
+    # ------------------------------------------------------------------
+    @timed
+    def tied_false_positives(self, buffered, score, thresholds, score_outside=None):
+        """False positives admitted exactly at each threshold, (n_buffers, n_thresholds).
+
+        A point whose score equals a threshold enters together with the
+        points that threshold admits: the ROC curve moves diagonally there,
+        not flat and then up. Counted as the points tied with the threshold
+        minus their buffered label mass. Points outside the global mask are
+        plain normals, so their tie count is added as is.
+        """
+        n = len(thresholds)
+        pos = np.searchsorted(-thresholds, -score)                 # thresholds are descending
+        hit = pos < n
+        hit[hit] = thresholds[pos[hit]] == score[hit]
+        n_tied = np.bincount(pos[hit], minlength=n).astype(np.float64)
+        if score_outside is not None:
+            s = np.sort(score_outside)
+            n_tied += np.searchsorted(s, thresholds, side='right') - np.searchsorted(s, thresholds, side='left')
+        tp_tied = np.zeros((n, self.n_buffers))
+        np.add.at(tp_tied, pos[hit], buffered[:, hit].T)
+        return n_tied[None, :] - tp_tied.T
+
+    @timed
+    def roc(self, recall, fp, positives, fp_tied, T, P):
+        """Area under each ROC curve, averaged over the buffers (VUS-ROC).
+
+        TPR is the existence-weighted recall, FPR = FP / (T - positives), with
+        T the full series length and P the anomaly points (the positives
+        before any threshold). The thresholds are the ones where the surface
+        can change, so between two of them TPR is flat and the area is a
+        rectangle at the previous TPR. At a threshold the curve moves
+        diagonally, from the point just before it (the false positives
+        admitted earlier, over the previous negatives count) to the point at
+        it; the trapezoid rule credits that width at half the TPR jump. The
+        curve closes flat at TPR 1 to (1, 1). This equals the trapezoid rule
+        over every distinct score value, the VUS definition.
+        """
+        negatives = np.hstack((np.full((self.n_buffers, 1), float(T - P)), T - positives))
+        fpr = np.hstack((np.zeros((self.n_buffers, 1)), fp / negatives[:, 1:]))
+        before = (fp - fp_tied) / negatives[:, :-1]
+        tpr = recall
+        flat = np.sum((fpr[:, 1:] - fpr[:, :-1]) * tpr[:, :-1], axis=1) + (1 - fpr[:, -1]) * tpr[:, -1]
+        diagonal = np.sum((fpr[:, 1:] - before) * (tpr[:, 1:] - tpr[:, :-1]) / 2, axis=1)
+        return self._mean(flat + diagonal)
+
     # ------------------------------------------------------------------
     # The metric
     # ------------------------------------------------------------------
-    def compute(self, label, score, cap_left=None, cap_right=None):
-        """VUS-PR of a score against a binary label.
+    def compute(self, label, score, cap_left=None, cap_right=None, metric='pr'):
+        """VUS-PR or VUS-ROC of a score against a binary label.
 
         Args:
             label: 0/1 array of length T.
             score: anomaly score of length T, higher = more anomalous.
             cap_left, cap_right: optional per-anomaly buffer caps (one value
                 per anomaly, in order), used by AutoVUS. Pass both or neither.
+            metric: 'pr' (VUS-PR), 'roc' (VUS-ROC) or 'both' (a tuple of the two).
 
         Returns:
-            float, or with cumulative=True an array with one VUS-PR per
+            float, or with cumulative=True an array with one value per
             buffer length in self.buffers. Step times are in self.timings.
             self.label_mass holds the sum of the buffered label per buffer:
             label_mass[i] / T is the expected AUC-PR of a random detector at
@@ -402,16 +454,22 @@ class FastVUS:
         """
         if (cap_left is None) != (cap_right is None):
             raise ValueError("pass both cap_left and cap_right, or neither")
+        if metric not in ('pr', 'roc', 'both'):
+            raise ValueError(f"metric={metric!r} must be 'pr', 'roc' or 'both'")
         self.timings = {}
         label = np.asarray(label)
         score = np.asarray(score, dtype=np.float64)
         if len(label) != len(score):
             raise ValueError(f"label has {len(label)} points, score {len(score)}")
         if not label.any():
-            raise ValueError("label has no anomaly: VUS-PR is undefined")
+            raise ValueError("label has no anomaly: VUS is undefined")
+        if metric != 'pr' and label.all():
+            raise ValueError("label has no normal point: VUS-ROC is undefined")
+        T = len(label)
 
         _, (start, end) = self.anomaly_coordinates(label)
         mask = self.safe_mask(label, start, end, extra_safe=self.global_mask)
+        score_outside = None
         if self.global_mask:
             score_outside = score[~mask]
             label, score = label[mask], score[mask]
@@ -432,4 +490,10 @@ class FastVUS:
             fp = fp + self.false_positives_outside(score_outside, thresholds)
 
         precision, recall = self.precision_recall(tp, fp, positives, existence)
-        return self.auc(recall, precision)
+        if metric == 'pr':
+            return self.auc(recall, precision)
+        fp_tied = self.tied_false_positives(buffered, score, thresholds, score_outside)
+        roc = self.roc(recall, fp, positives, fp_tied, T, int(label.sum()))
+        if metric == 'roc':
+            return roc
+        return self.auc(recall, precision), roc
