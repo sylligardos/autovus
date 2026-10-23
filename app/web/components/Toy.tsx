@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { loadToy } from "@/lib/api";
 import { TYPE_COLOR, f3, fsec, type ToyDoc } from "@/lib/model";
 import { LineChart } from "./LineChart";
+import { useRemembered } from "@/lib/remember";
 
 const FAMILIES: [string, string[]][] = [
   ["A · same width, shifted", ["A1", "A2", "A3", "A4", "A5"]],
@@ -16,10 +17,11 @@ const FAMILIES: [string, string[]][] = [
 ];
 
 export function Toy() {
-  const [c, setC] = useState("A4");
-  const [sides, setSides] = useState<"symmetric" | "per_side">("symmetric");
+  const [c, setC] = useRemembered("toy:case", "A4");
+  const [rule, setRule] = useRemembered<"paper" | "ratio">("toy:rule", "paper");
+  const [sides, setSides] = useRemembered<"symmetric" | "per_side">("toy:sides", "symmetric");
   const [doc, setDoc] = useState<ToyDoc | null>(null);
-  useEffect(() => { let live = true; loadToy(c, 20, sides).then((d) => { if (live) setDoc(d); }); return () => { live = false; }; }, [c, sides]);
+  useEffect(() => { let live = true; loadToy(c, 20, rule, sides).then((d) => { if (live) setDoc(d); }); return () => { live = false; }; }, [c, rule, sides]);
   const T = 160, W = 520, H = 150;
   const x = (p: number) => (p / T) * W;
   const a = doc?.anomaly;
@@ -29,7 +31,11 @@ export function Toy() {
       <div className="panel-head">
         <h2>How the buffer is chosen, on 24 toy cases</h2>
         <span className="muted" style={{ fontSize: 12 }}>one anomaly of 20 points, a block detector · L = 20</span>
-        <span className="seg" role="group" aria-label="Buffer sides" style={{ marginLeft: "auto", width: 200 }}>
+        <span className="seg" role="group" aria-label="Selection rule" style={{ marginLeft: "auto", width: 200 }}>
+          <button type="button" aria-pressed={rule === "paper"} onClick={() => setRule("paper")} style={{ height: 28 }}>Paper rule</button>
+          <button type="button" aria-pressed={rule === "ratio"} onClick={() => setRule("ratio")} style={{ height: 28 }}>Ratio rule</button>
+        </span>
+        <span className="seg" role="group" aria-label="Buffer sides" style={{ width: 200 }}>
           <button type="button" aria-pressed={sides === "symmetric"} onClick={() => setSides("symmetric")} style={{ height: 28 }}>Symmetric</button>
           <button type="button" aria-pressed={sides === "per_side"} onClick={() => setSides("per_side")} style={{ height: 28 }}>Per side</button>
         </span>

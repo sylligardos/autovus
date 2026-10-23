@@ -52,23 +52,25 @@ def ok(name, cond):
 
 
 def main():
-    cpu = AutoVUS(FastVUS(L=L, cumulative=True))
-    gpu = AutoVUS(FastVUSGPU(L=L, cumulative=True, device='cuda' if torch.cuda.is_available() else 'cpu'))
     results = []
-    print('selection (b*_left / b*_right per anomaly):')
     agree = total = 0
     worst = 0.0
-    for case, (label, score) in detection_cases().items():
-        r_cpu, r_gpu = cpu.compute(label, score), gpu.compute(label, score)
-        types = [a['detection'] for a in r_cpu['anomalies']]
-        results.append(ok(f"{case}: detection types {types}", all(e is None or e == t for e, t in zip(EXPECTED[case], types))))
-        for a, b in zip(r_cpu['anomalies'], r_gpu['anomalies']):
-            ba = (a['left']['buffer_val'], a['right']['buffer_val'])
-            bb = (b['left']['buffer_val'], b['right']['buffer_val'])
-            agree += ba == bb; total += 1
-            print(f"      anomaly {a['start']:5d}: cpu {ba}  gpu {bb}  {a['detection']}")
-        worst = max(worst, abs(r_cpu['vus_adapt'] - r_gpu['vus_adapt']), abs(r_cpu['skill_adapt'] - r_gpu['skill_adapt']))
-        print(f"      vus_full {r_cpu['vus_full']:.4f}  vus_adapt {r_cpu['vus_adapt']:.4f}  skill_adapt {r_cpu['skill_adapt']:.4f}")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    for rule in AutoVUS.RULES:
+        cpu = AutoVUS(FastVUS(L=L, cumulative=True), rule=rule, sides='per_side')
+        gpu = AutoVUS(FastVUSGPU(L=L, cumulative=True, device=device), rule=rule, sides='per_side')
+        print(f'rule={rule}, per side: selection (b*_left / b*_right per anomaly):')
+        for case, (label, score) in detection_cases().items():
+            r_cpu, r_gpu = cpu.compute(label, score), gpu.compute(label, score)
+            types = [a['detection'] for a in r_cpu['anomalies']]
+            results.append(ok(f"{rule}, {case}: detection types {types}", all(e is None or e == t for e, t in zip(EXPECTED[case], types))))
+            for a, b in zip(r_cpu['anomalies'], r_gpu['anomalies']):
+                ba = (a['left']['buffer_val'], a['right']['buffer_val'])
+                bb = (b['left']['buffer_val'], b['right']['buffer_val'])
+                agree += ba == bb; total += 1
+                print(f"      anomaly {a['start']:5d}: cpu {ba}  gpu {bb}  {a['detection']}")
+            worst = max(worst, abs(r_cpu['vus'] - r_gpu['vus']), abs(r_cpu['adjusted'] - r_gpu['adjusted']))
+            print(f"      vus_adapt {r_cpu['vus']:.4f}  autovus {r_cpu['adjusted']:.4f}")
     results.append(ok(f"b* agreement FastVUS vs FastVUSGPU engines: {agree}/{total}", agree == total))
     results.append(ok(f"scores agree between engines: max diff {worst:.1e}", worst < 1e-6))
     print('ALL OK' if all(results) else 'FAILURES')

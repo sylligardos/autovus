@@ -3,17 +3,17 @@ import { TopBar } from "@/components/TopBar";
 import { Toy } from "@/components/Toy";
 import { loadSummary } from "@/lib/api";
 import { loadTables } from "@/lib/tables";
-import { fmt, fsec, href, stateFrom } from "@/lib/model";
+import { METRICS, fmt, fsec, href, stateFrom } from "@/lib/model";
 
 export default async function Intro({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const state = stateFrom(await searchParams);
   const summary = await loadSummary(state.benchmark);
   const tables = await loadTables(state.benchmark);
   const autoTotal = tables ? tables.rows.reduce((s, r) => s + r.t_autovus, 0) : null;
-  const nMetrics = 6;
+  const nMetrics = METRICS.length;
   const cards = [
     { n: "01", title: "Series", text: "One series, every detector as a lane, the buffer chosen for every anomaly shaded on it.", cta: "Sample a series", to: href("/series", state) },
-    { n: "02", title: "Cases", text: "Every series and detector as a point, one metric against another. The ones off the diagonal, ranked, each with its reason.", cta: "Biggest swing", to: href("/cases", state) },
+    { n: "02", title: "Cases", text: "Every series and detector as a point, one metric against another. Coloured by how the detector's rank on the series moves, the biggest moves first.", cta: "Biggest swing", to: href("/cases", state) },
     { n: "03", title: "Rankings", text: "Two metrics side by side with every rank move drawn between them, a delayed oracle and a random score as references.", cta: "AUC-PR to AutoVUS", to: href("/rankings", state) },
     { n: "04", title: "Speed", text: "Every metric timed on the whole benchmark, every series against its length, your own label and score timed live.", cta: "See the runtimes", to: href("/speed", state) },
   ];
@@ -25,7 +25,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: "46em" }}>
             <span className="eyebrow">ICDE 2027 demo</span>
             <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.015em", lineHeight: 1.15 }}>A buffer for every anomaly, chosen by the detector&apos;s own lag.</h1>
-            <p className="muted" style={{ margin: 0, fontSize: 15 }}>VUS scores a detector with one buffer around every labelled anomaly. AutoVUS picks the buffer per anomaly and per side, as wide as the detection needs, and charges the detector for the width. FastVUS makes that affordable on a whole benchmark.</p>
+            <p className="muted" style={{ margin: 0, fontSize: 15 }}>VUS scores a detector with one buffer around every labelled anomaly. AutoVUS picks the buffer per anomaly, as wide as the detection needs, and charges the detector for the width. FastVUS makes that affordable on a whole benchmark.</p>
             <p className="muted" style={{ margin: 0, fontSize: 13 }}>[Author names] · [Affiliation] · [email]</p>
           </div>
           {summary ? (
@@ -55,7 +55,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
         <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }} aria-label="Vocabulary">
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">VUS</span><span className="muted" style={{ fontSize: 13 }}>The volume under the surface of the PR or ROC curve over every buffer from 0 to L. One buffer grid for every anomaly of the series.</span></div>
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">FastVUS, the engine</span><span className="muted" style={{ fontSize: 13 }}>The same volume, computed once for all buffers at once. Exact on the CPU. On the GPU every term is exact except the existence term, which is approximated.</span></div>
-          <div className="panel panel-accent" style={{ gap: 6 }}><span className="eyebrow" style={{ color: "var(--accent)" }}>AutoVUS, the metric</span><span className="muted" style={{ fontSize: 13 }}>For every anomaly and detection, the buffer where the detector&apos;s gain over a random score peaks, per side. The score is chance-adjusted, so a wide buffer costs.</span></div>
+          <div className="panel panel-accent" style={{ gap: 6 }}><span className="eyebrow" style={{ color: "var(--accent)" }}>AutoVUS, the metric</span><span className="muted" style={{ fontSize: 13 }}>For every anomaly, one buffer for both sides, where the detector&apos;s gain over a random score peaks. The score is chance-adjusted, so a wide buffer costs.</span></div>
         </section>
       </main>
       <footer className="muted" style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", fontSize: 12, display: "flex", gap: 16 }}><span>[Code]</span><span>[Data]</span><span>[Paper]</span></footer>

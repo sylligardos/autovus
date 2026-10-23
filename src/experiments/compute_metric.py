@@ -6,7 +6,8 @@ run it once per measure on TSB-AD (all detectors) and on the synthetic sweeps.
     conda run -n autovus python src/experiments/compute_metric.py --dataset tsb --metric fastvus --detector all --experiment all_metrics_tsb
     conda run -n autovus python src/experiments/compute_metric.py --dataset syn_0 --metric fastvus_gpu --experiment scaling_syn
 
-Measures: fastvus, fastvus_gpu (ours), and the baselines auc, vus, range_auc,
+Measures: fastvus, fastvus_gpu, adjustedvus, adjustedvus_gpu, autovus,
+autovus_gpu, autovus_per_side, autovus_gpu_per_side (ours), and the baselines auc, vus, range_auc,
 rf, affiliation, pate (src/baselines). Upstream vus takes windowSize = 2L.
 Datasets: 'tsb' (TSB-AD univariate, via tsad_parser), 'syn_<k>' or
 'all_synthetic' (label + score .npz files under <benchmarks>/_synthetic/).
@@ -28,11 +29,13 @@ import torch
 from tqdm import tqdm
 from tsad_parser import TSADParser
 
-from autovus import FastVUS, FastVUSGPU
+from autovus import FastVUS, FastVUSGPU, AdjustedVUS, AutoVUS
 from baselines import compute as baseline_compute, METRICS as BASELINES
 
-OURS = ('fastvus', 'fastvus_gpu')
-NEEDS_L = ('fastvus', 'fastvus_gpu', 'vus', 'range_auc', 'pate')
+AUTO = ('autovus', 'autovus_gpu', 'autovus_per_side', 'autovus_gpu_per_side')   # sides: symmetric, per_side
+ADJ = ('adjustedvus', 'adjustedvus_gpu')
+OURS = ('fastvus', 'fastvus_gpu') + ADJ + AUTO
+NEEDS_L = OURS + ('vus', 'range_auc', 'pate')
 TORCH_SORT_MAX = 2 ** 31 - 1     # torch.sort limit; the longest synthetic series is cut to it
 
 
@@ -101,9 +104,17 @@ def make_ours(metric, L, step, global_mask, n_thresholds):
     kwargs = dict(L=L, step=step, global_mask=global_mask)
     if n_thresholds is not None:
         kwargs['max_thresholds'] = n_thresholds
-    if metric == 'fastvus':
-        return FastVUS(**kwargs)
-    return FastVUSGPU(**kwargs, device='cuda' if torch.cuda.is_available() else 'cpu')
+    if metric in ADJ + AUTO:
+        kwargs['cumulative'] = True
+    if 'gpu' in metric:
+        engine = FastVUSGPU(**kwargs, device='cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        engine = FastVUS(**kwargs)
+    if metric in AUTO:
+        return AutoVUS(engine, sides='per_side' if metric.endswith('per_side') else 'symmetric')
+    if metric in ADJ:
+        return AdjustedVUS(engine)
+    return engine
 
 
 def compute_metric(metric, data, L, step, global_mask, n_thresholds, save_path=None):
@@ -122,11 +133,14 @@ def compute_metric(metric, data, L, step, global_mask, n_thresholds, save_path=N
         if ours is not None:
             t0 = time.perf_counter()
             value = ours.compute(label, score)
-            if metric == 'fastvus_gpu':
+            if metric in ADJ + AUTO:
+                value = value['adjusted']
+            if 'gpu' in metric:
                 torch.cuda.synchronize() if torch.cuda.is_available() else None
             seconds = time.perf_counter() - t0
             row['n_thresholds'] = None
-            row.update({f'time {k}': v for k, v in ours.timings.items()})
+            if metric not in AUTO:                        # AutoVUS calls the engine many times; only the total time is kept
+                row.update({f'time {k}': v for k, v in getattr(ours, 'engine', ours).timings.items()})
         else:
             kwargs = {'thre': n_thresholds} if (n_thresholds is not None and metric in ('vus', 'range_auc')) else {}
             value, seconds = baseline_compute(metric, label, score, L=L, **kwargs)

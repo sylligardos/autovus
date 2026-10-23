@@ -189,3 +189,6 @@ cython_debug/
 
 # Local-only symlink to the (separate) Overleaf paper repo — never commit
 references/autovus-paper
+
+# demo export, too big for GitHub (124 MB); regenerate with app/export.py
+app/data/*/anomalies.csv

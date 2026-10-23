@@ -20,6 +20,9 @@
   --early: #3B6FE0;
   --late: #E07B1A;
   --missed: #8A96A8;
+  --wide: #8E5BD0;
+  --up: #45A86C;
+  --down: #D86A62;
   --tooltip-bg: #152033;
   --tooltip-ink: #FFFFFF;
   --scrim: rgba(21, 32, 51, 0.45);
@@ -48,6 +51,9 @@
   --early: #5B8CFF;
   --late: #F08A3C;
   --missed: #7D838C;
+  --wide: #B48CF0;
+  --up: #62C48A;
+  --down: #E67C74;
   --tooltip-bg: #E6E4DD;
   --tooltip-ink: #0F1114;
   --scrim: rgba(0, 0, 0, 0.55);

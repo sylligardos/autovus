@@ -1,15 +1,31 @@
 {
  "n_series": 870,
- "n_series_total": 490,
+ "n_series_total": 870,
  "done": true,
  "n_datasets": 23,
  "n_detectors": 32,
  "n_anomalies": 34554,
  "n_points": 33768217,
- "L": 256,
- "rule": "paper",
- "sides": "per_side",
+ "L": 128,
+ "variants": {
+  "": [
+   "paper",
+   "symmetric"
+  ],
+  "_ps": [
+   "paper",
+   "per_side"
+  ],
+  "_ratio": [
+   "ratio",
+   "symmetric"
+  ],
+  "_ratio_ps": [
+   "ratio",
+   "per_side"
+  ]
+ },
  "oracle_delay": 64,
- "phase1_seconds": 4510.092882156372,
- "workers": 16
+ "phase1_seconds": 4020.8994715213776,
+ "workers": 4
 }

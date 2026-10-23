@@ -6,12 +6,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadCurves, loadNotes, loadRank, loadScoreDoc, loadSelect, loadSeriesDoc, saveNotes, type Notes } from "@/lib/api";
-import { TYPE_COLOR, f3, fmt, fsec, href, shortFile, type Anomaly, type CurvesDoc, type RankRow, type ScoreDoc, type SelectDoc, type SeriesDoc, type SeriesMeta, type State, type Summary } from "@/lib/model";
+import { REFERENCES, TYPE_COLOR, autovusLabel, f3, fmt, fsec, href, shortFile, type Anomaly, type CurvesDoc, type RankRow, type Rule, type Sides, type ScoreDoc, type SelectDoc, type SeriesDoc, type SeriesMeta, type State, type Summary } from "@/lib/model";
 import { Lane, type Band, type Zone } from "./Lane";
+import { useRemembered } from "@/lib/remember";
 import { LineChart } from "./LineChart";
 
 const PINS_KEY = "autovus.pins";
 const MAX_TOP = 8;
+const BEFORE = "var(--early)", AFTER = "var(--down)", RANGE = "var(--muted)";
 type Hover = { detector: string; a: Anomaly; left: number } | null;
 
 function readPins(): string[] { try { return JSON.parse(localStorage.getItem(PINS_KEY) ?? "[]"); } catch { return []; } }
@@ -24,13 +26,15 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
   const b = state.benchmark;
   const datasets = Object.keys(seriesByDataset);
   const firstFile = seriesByDataset[datasets[0]]?.[0]?.file ?? "";
-  const [file, setFile] = useState(initialFile ?? firstFile);
+  const k = `series:${b}:`;
+  const [file, setFile] = useRemembered(k + "file", firstFile, initialFile);
   const upload = file.startsWith("upload:");
   const dataset = useMemo(() => datasets.find((d) => seriesByDataset[d].some((s) => s.file === file)) ?? datasets[0], [datasets, seriesByDataset, file]);
-  const [L, setL] = useState(256);
-  const [sides, setSides] = useState<"per_side" | "symmetric">("per_side");
-  const [gpu, setGpu] = useState(false);
-  const [topN, setTopN] = useState(initialTop ?? 3);
+  const [L, setL] = useRemembered(k + "L", 128);
+  const [rule, setRule] = useRemembered<Rule>(k + "rule", "paper");
+  const [sides, setSides] = useRemembered<Sides>(k + "sides", "symmetric");
+  const [gpu, setGpu] = useRemembered(k + "gpu", false);
+  const [topN, setTopN] = useRemembered(k + "top", 3, initialTop);
   const [pins, setPins] = useState<string[]>(initialPins);
   const [doc, setDoc] = useState<SeriesDoc | null>(null);
   const [rank, setRank] = useState<RankRow[]>([]);
@@ -42,6 +46,8 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
   const [notes, setNotes] = useState<Notes>({});
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<[number, number] | null>(null);
+  const [zoomed, setZoomed] = useState<{ doc: SeriesDoc | null; scores: Record<string, ScoreDoc> }>({ doc: null, scores: {} });
   const loaded = useRef(false);
 
   // Pins: the URL wins over the browser's memory.
@@ -63,18 +69,18 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
   // The series, then the ranking of every detector on it.
   useEffect(() => {
     let live = true;
-    setDoc(null); setScores({}); setSelects({}); setPicked(null); setCurves(null); setHover(null); setError(null);
+    setDoc(null); setScores({}); setSelects({}); setPicked(null); setCurves(null); setHover(null); setError(null); setView(null);
     loadSeriesDoc(b, file).then((d) => { if (live) { if (d) setDoc(d); else setError("The Python side did not answer."); } });
     if (upload) setRank([{ detector: "yours", autovus: null, adj_vus: null, vus_pr: null, auc_pr: null }]);
-    else loadRank(b, file, L, sides).then((r) => { if (live) setRank(r ?? []); });
+    else loadRank(b, file, L, rule, sides).then((r) => { if (live) setRank((r ?? []).filter((x) => !REFERENCES.includes(x.detector))); });
     return () => { live = false; };
-  }, [b, file, L, sides, upload]);
+  }, [b, file, L, rule, sides, upload]);
 
   const shown = useMemo(() => {
     const top = rank.slice(0, topN).map((r) => r.detector);
     const set = new Map<string, boolean>();
     for (const d of top) set.set(d, false);
-    for (const d of pins) if (!upload) set.set(d, true);
+    for (const d of pins) if (!upload && !REFERENCES.includes(d)) set.set(d, true);
     if (upload) set.set("yours", false);
     const order = new Map(rank.map((r, i) => [r.detector, i]));
     return Array.from(set.entries()).sort((a, c) => (order.get(a[0]) ?? 1e9) - (order.get(c[0]) ?? 1e9));
@@ -85,20 +91,34 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
     let live = true;
     for (const [det] of shown) {
       if (!scores[det]) loadScoreDoc(b, file, det).then((s) => { if (live && s) setScores((m) => ({ ...m, [det]: s })); });
-      if (!selects[det]) loadSelect(b, file, det, L, sides, gpu).then((s) => { if (live && s) setSelects((m) => ({ ...m, [det]: s })); });
+      if (!selects[det]) loadSelect(b, file, det, L, rule, sides, gpu).then((s) => { if (live && s) setSelects((m) => ({ ...m, [det]: s })); });
     }
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shown, b, file, L, sides, gpu]);
-  useEffect(() => { setSelects({}); setPicked(null); setCurves(null); }, [L, sides, gpu]);
+  }, [shown, b, file, L, rule, sides, gpu]);
+  useEffect(() => { setSelects({}); setPicked(null); setCurves(null); }, [L, rule, sides, gpu]);
+
+  // The zoom window: finer bins for every shown lane, fetched once the drag settles.
+  useEffect(() => {
+    if (!view) return;
+    let live = true;
+    const t = setTimeout(() => {
+      loadSeriesDoc(b, file, 2000, view).then((d) => { if (live && d) setZoomed((z) => ({ ...z, doc: d })); });
+      for (const [det] of shown) loadScoreDoc(b, file, det, 2000, view).then((s) => { if (live && s) setZoomed((z) => ({ ...z, scores: { ...z.scores, [det]: s } })); });
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [view, b, file, shown]);
+  // A lane draws the zoomed bins only when they cover the whole window.
+  const covers = (d: { start?: number; end?: number } | null | undefined) => !!(d && view && (d.start ?? 0) <= view[0] && (d.end ?? Infinity) >= view[1]);
+  const seriesData = covers(zoomed.doc) ? zoomed.doc! : doc;
 
   // The drawer.
   useEffect(() => {
     if (!picked) { setCurves(null); return; }
     let live = true;
-    loadCurves(b, file, picked.detector, picked.k, L, sides, gpu).then((c) => { if (live) setCurves(c); });
+    loadCurves(b, file, picked.detector, picked.k, L, rule, sides, gpu).then((c) => { if (live) setCurves(c); });
     return () => { live = false; };
-  }, [picked, b, file, L, sides, gpu]);
+  }, [picked, b, file, L, rule, sides, gpu]);
 
   const seconds = Object.values(selects).reduce((s, x) => s + x.seconds, 0);
   const n = doc?.n ?? 1;
@@ -108,11 +128,11 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
     const i = list.findIndex((s) => s.file === file);
     const next = list[(i + dir + list.length) % list.length];
     if (next) setFile(next.file);
-  }, [seriesByDataset, dataset, file]);
+  }, [seriesByDataset, dataset, file, setFile]);
   const sample = useCallback(() => {
     const all = datasets.flatMap((d) => seriesByDataset[d]);
     setFile(all[Math.floor(Math.random() * all.length)].file);
-  }, [datasets, seriesByDataset]);
+  }, [datasets, seriesByDataset, setFile]);
 
   const picksel = picked ? selects[picked.detector] : null;
   const pickA = picksel?.anomalies[picked!.k];
@@ -136,10 +156,14 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
           </div>
         </div>
         <div className="field">
-          <span>Buffer</span>
+          <span>AutoVUS</span>
+          <span className="seg" role="group" aria-label="Selection rule">
+            <button type="button" aria-pressed={rule === "paper"} onClick={() => setRule("paper")}>Paper rule</button>
+            <button type="button" aria-pressed={rule === "ratio"} onClick={() => setRule("ratio")}>Ratio rule</button>
+          </span>
           <span className="seg" role="group" aria-label="Buffer sides">
-            <button type="button" aria-pressed={sides === "per_side"} onClick={() => setSides("per_side")}>Per side</button>
             <button type="button" aria-pressed={sides === "symmetric"} onClick={() => setSides("symmetric")}>Symmetric</button>
+            <button type="button" aria-pressed={sides === "per_side"} onClick={() => setSides("per_side")}>Per side</button>
           </span>
           <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, marginTop: 4 }}>
             <span style={{ display: "flex", justifyContent: "space-between" }}>L, largest buffer <span className="mono" style={{ color: "var(--ink)" }}>{L}</span></span>
@@ -159,48 +183,57 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
           <span className="muted" style={{ fontSize: 12 }}>{gpu ? "FastVUS GPU" : "FastVUS CPU"}, {shown.length} detectors, {doc?.labels.length ?? "…"} anomalies</span>
         </div>
         <div className="field muted" style={{ paddingTop: 12, borderTop: "1px solid var(--border)", fontSize: 12, gap: 6 }}>
-          <span>Types</span>
-          {(["exact", "early", "late", "missed"] as const).map((t) => <span key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="swatch" style={{ background: TYPE_COLOR[t] }} />{t}</span>)}
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="swatch" style={{ background: "var(--label)" }} />label</span>
+          <span>Buffers</span>
+          {([["buffer before", BEFORE, 1], ["buffer after", AFTER, 1], ["up to L", RANGE, 0.3], ["label", "var(--label)", 1]] as const).map(([t, c, o]) => <span key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="swatch" style={{ background: c, opacity: o }} />{t}</span>)}
         </div>
       </aside>
 
       <main className="content">
-        <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.01em" }}>{upload ? "Your data" : file.replace(/\.csv$/, "")}</h1>
-          {doc && <span className="muted" style={{ fontSize: 13 }}>{fmt(doc.n)} points · {doc.labels.length} anomalies</span>}
-          {error && <span style={{ color: "var(--late)", fontSize: 13 }}>{error}</span>}
-        </div>
-
-        <section className="panel" aria-label="The series">
-          {doc ? <Lane lo={doc.lo} hi={doc.hi} bins={doc.bins} n={doc.n} height={120} bands={labelBands} /> : <div style={{ height: 120 }} />}
-        </section>
-
-        <section className="panel" aria-label="Detector lanes">
-          <div className="panel-head">
-            <h2>Detectors on this series</h2>
-            <span className="muted" style={{ fontSize: 12 }}>top {topN} by AutoVUS, plus pinned</span>
+        <section className="panel" aria-label="The series and detector lanes">
+          {!upload && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingBottom: 8, borderBottom: "1px solid var(--border)" }}>
+              <label className="muted" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>Pin a detector
+                <select className="select" style={{ height: 30, fontSize: 12 }} value="" onChange={(e) => { if (e.target.value) setPins((p) => (p.includes(e.target.value) ? p : [...p, e.target.value])); }}>
+                  <option value="">…</option>
+                  {summary.detectors.filter((d) => !shown.some(([s]) => s === d)).map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </label>
+              <label className="muted" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>Top
+                <input type="number" className="input" style={{ width: 56, height: 30, fontSize: 12 }} min={0} max={MAX_TOP} value={topN} onChange={(e) => setTopN(Math.max(0, Math.min(MAX_TOP, Number(e.target.value) || 0)))} />
+              </label>
+            </div>
+          )}
+          <div className="lane-row">
+            <div className="lane-name">
+              <span className="mono" style={{ fontWeight: 600, fontSize: 11, wordBreak: "break-all" }}>{upload ? "Your data" : file.replace(/\.csv$/, "")}</span>
+              {doc && <span className="muted" style={{ fontSize: 11 }}>{fmt(doc.n)} points · {doc.labels.length} anomalies</span>}
+              {error && <span style={{ color: "var(--late)", fontSize: 11 }}>{error}</span>}
+              {view && <button type="button" className="btn" style={{ height: 26, marginTop: 4, alignSelf: "flex-start" }} onClick={() => setView(null)}>Reset zoom</button>}
+            </div>
+            {doc && seriesData ? <Lane lo={seriesData.lo} hi={seriesData.hi} bins={seriesData.bins} n={doc.n} start={seriesData.start} end={seriesData.end} view={view} onZoom={setView} height={120} bands={labelBands} /> : <div style={{ height: 120 }} />}
           </div>
           {shown.map(([det, pinned]) => {
             const sel = selects[det];
             const zones: Zone[] = [];
-            const bands: Band[] = [...labelBands];
+            // Back to front: the range up to L (within the anomaly's window), the label, the selected buffers.
+            const range: Band[] = [], picks: Band[] = [];
             if (sel) for (const a of sel.anomalies) {
-              const color = TYPE_COLOR[a.type];
-              if (a.type === "missed") bands.push({ from: a.start, to: a.end + 1, color: "var(--missed)", opacity: 0.55, key: `m${a.k}` });
-              if (a.b_left > 0) bands.push({ from: a.start - a.b_left, to: a.start, color, opacity: 0.4, key: `bl${a.k}` });
-              if (a.b_right > 0) bands.push({ from: a.end + 1, to: a.end + 1 + a.b_right, color, opacity: 0.4, key: `br${a.k}` });
+              range.push({ from: Math.max(a.window[0], a.start - L), to: a.start, color: RANGE, opacity: 0.12, key: `rl${a.k}` });
+              range.push({ from: a.end + 1, to: Math.min(a.window[1], a.end + 1 + L), color: RANGE, opacity: 0.12, key: `rr${a.k}` });
+              if (a.b_left > 0) picks.push({ from: a.start - a.b_left, to: a.start, color: BEFORE, opacity: 0.4, key: `bl${a.k}` });
+              if (a.b_right > 0) picks.push({ from: a.end + 1, to: a.end + 1 + a.b_right, color: AFTER, opacity: 0.4, key: `br${a.k}` });
               zones.push({
-                from: a.start - a.b_left, to: a.end + 1 + a.b_right, color, key: `z${a.k}`,
+                from: a.start - a.b_left, to: a.end + 1 + a.b_right, color: "transparent", key: `z${a.k}`,
                 selected: picked?.detector === det && picked.k === a.k,
-                onEnter: () => setHover({ detector: det, a, left: ((a.start + a.end + 1) / 2 / n) * 100 }),
+                onEnter: () => setHover({ detector: det, a, left: (((a.start + a.end + 1) / 2 - (view?.[0] ?? 0)) / ((view?.[1] ?? n) - (view?.[0] ?? 0))) * 100 }),
                 onLeave: () => setHover((h) => (h && h.detector === det && h.a.k === a.k ? null : h)),
                 onClick: () => setPicked({ detector: det, k: a.k }),
               });
             }
+            const bands: Band[] = [...range, ...labelBands, ...picks];
             const r = rank.find((x) => x.detector === det);
             const pos = rank.findIndex((x) => x.detector === det);
-            const sc = scores[det];
+            const sc = covers(zoomed.scores[det]) ? zoomed.scores[det] : scores[det];
             return (
               <div key={det} className="lane-row">
                 <div className="lane-name">
@@ -211,11 +244,13 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
                       onClick={() => setPins((p) => (pinned ? p.filter((x) => x !== det) : [...p, det]))}>{pinned ? "×" : "+"}</button>}
                   </span>
                   <span className="mono muted" style={{ fontSize: 11 }}>
-                    {sel ? `AutoVUS ${f3(sel.autovus)} · Adj VUS ${f3(sel.skill_full)} · VUS ${f3(sel.vus_full)}` : r && r.autovus !== null ? `AutoVUS ${f3(r.autovus)} · Adj VUS ${f3(r.adj_vus)}` : "…"}{pos >= 0 && !upload ? ` · #${pos + 1}` : ""}
+                    {autovusLabel(rule, sides)} {f3(sel ? sel.autovus : r?.autovus)}{pos >= 0 && !upload ? ` · #${pos + 1}` : ""}
                   </span>
+                  <span className="mono muted" style={{ fontSize: 11 }}>Adjusted VUS {f3(sel ? sel.skill_full : r?.adj_vus)}</span>
+                  <span className="mono muted" style={{ fontSize: 11 }}>VUS-PR {f3(sel ? sel.vus_full : r?.vus_pr)}</span>
                 </div>
                 {sc ? (
-                  <Lane lo={sc.lo} hi={sc.hi} bins={sc.bins} n={sc.n} ymin={0} ymax={1} bands={bands} zones={zones}>
+                  <Lane lo={sc.lo} hi={sc.hi} bins={sc.bins} n={sc.n} start={sc.start} end={sc.end} view={view} onZoom={setView} ymin={0} ymax={1} bands={bands} zones={zones}>
                     {hover && hover.detector === det && (
                       <div className="hover-card" style={{ left: `${Math.min(Math.max(hover.left, 12), 88)}%` }}>
                         <span><b>{det}</b> on anomaly {hover.a.k + 1}, [{fmt(hover.a.start)}, {fmt(hover.a.end)}]</span>
@@ -227,19 +262,6 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
               </div>
             );
           })}
-          {!upload && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-              <label className="muted" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>Pin a detector
-                <select className="select" style={{ height: 30, fontSize: 12 }} value="" onChange={(e) => { if (e.target.value) setPins((p) => (p.includes(e.target.value) ? p : [...p, e.target.value])); }}>
-                  <option value="">…</option>
-                  {[...summary.detectors, ...summary.references].filter((d) => !shown.some(([s]) => s === d)).map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </label>
-              <label className="muted" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>Top
-                <input type="number" className="input" style={{ width: 56, height: 30, fontSize: 12 }} min={0} max={MAX_TOP} value={topN} onChange={(e) => setTopN(Math.max(0, Math.min(MAX_TOP, Number(e.target.value) || 0)))} />
-              </label>
-            </div>
-          )}
         </section>
 
         {picked && pickA && (
@@ -273,9 +295,8 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
 function Drawer({ curves, a, L }: { curves: CurvesDoc; a: Anomaly; L: number }) {
   const z = curves.zoom;
   const bands: Band[] = [{ from: a.start - z.from, to: a.end + 1 - z.from, color: "var(--label)", opacity: 0.45 }];
-  const color = TYPE_COLOR[a.type];
-  if (a.b_left > 0) bands.push({ from: a.start - a.b_left - z.from, to: a.start - z.from, color, opacity: 0.35 });
-  if (a.b_right > 0) bands.push({ from: a.end + 1 - z.from, to: a.end + 1 + a.b_right - z.from, color, opacity: 0.35 });
+  if (a.b_left > 0) bands.push({ from: a.start - a.b_left - z.from, to: a.start - z.from, color: BEFORE, opacity: 0.35 });
+  if (a.b_right > 0) bands.push({ from: a.end + 1 - z.from, to: a.end + 1 + a.b_right - z.from, color: AFTER, opacity: 0.35 });
   const sides = Object.entries(curves.sides);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr) minmax(0, 3fr)", gap: 16 }}>

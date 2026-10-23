@@ -29,7 +29,7 @@ DATA = os.path.join(_ROOT, 'app', 'data')
 
 from tsad_parser import TSADParser  # noqa: E402
 from bench import load_series, load_score  # noqa: E402
-from autovus import FastVUS, AutoVUS  # noqa: E402
+from autovus import FastVUS, AdjustedVUS, AutoVUS  # noqa: E402
 try:
     from autovus import FastVUSGPU  # noqa: E402
     import torch  # noqa: E402
@@ -163,18 +163,27 @@ def series_list(b: str = Query('tsb-ad'), dataset: str = Query(...)):
     return out
 
 
+def window(n, start, end):
+    """The point range [start, end) clipped to the series, the whole series by default."""
+    start = max(0, min(int(start), n - 1))
+    end = n if end is None else max(start + 1, min(int(end), n))
+    return start, end
+
+
 @app.get('/series/{file}')
-def series_doc(file: str, b: str = Query('tsb-ad'), bins: int = Query(2000)):
+def series_doc(file: str, b: str = Query('tsb-ad'), bins: int = Query(2000), start: int = Query(0), end: int | None = Query(None)):
     label, _, values = load_pair(b, file, 'Random')
-    lo, hi, nb = binned(values, bins)
-    return {'file': file, 'n': int(len(label)), 'bins': nb, 'lo': lo, 'hi': hi, 'labels': runs(label)}
+    s, e = window(len(label), start, end)
+    lo, hi, nb = binned(values[s:e], bins)
+    return {'file': file, 'n': int(len(label)), 'start': s, 'end': e, 'bins': nb, 'lo': lo, 'hi': hi, 'labels': runs(label)}
 
 
 @app.get('/score')
-def score_doc(file: str, detector: str, b: str = Query('tsb-ad'), bins: int = Query(2000)):
+def score_doc(file: str, detector: str, b: str = Query('tsb-ad'), bins: int = Query(2000), start: int = Query(0), end: int | None = Query(None)):
     label, score, _ = load_pair(b, file, detector)
-    lo, hi, nb = binned(scaled(score), bins)
-    return {'file': file, 'detector': detector, 'n': int(len(label)), 'bins': nb, 'lo': lo, 'hi': hi}
+    s, e = window(len(label), start, end)
+    lo, hi, nb = binned(scaled(score)[s:e], bins)
+    return {'file': file, 'detector': detector, 'n': int(len(label)), 'start': s, 'end': e, 'bins': nb, 'lo': lo, 'hi': hi}
 
 
 # ---------------------------------------------------------------- endpoints: selection
@@ -182,6 +191,15 @@ def engine(L, use_gpu=False):
     if use_gpu and HAS_GPU:
         return FastVUSGPU(L=L, cumulative=True)
     return FastVUS(L=L, cumulative=True)
+
+
+def check_variant(rule, sides):
+    if rule not in AutoVUS.RULES or sides not in AutoVUS.SIDES:
+        raise HTTPException(400, 'bad rule or sides')
+
+
+# The export's field suffix of each AutoVUS variant (app/export.py VARIANTS).
+SUFFIX = {('paper', 'symmetric'): '', ('paper', 'per_side'): '_ps', ('ratio', 'symmetric'): '_ratio', ('ratio', 'per_side'): '_ratio_ps'}
 
 
 @lru_cache(maxsize=256)
@@ -194,6 +212,7 @@ def selection(benchmark, file, detector, L, rule, sides, use_gpu):
     t0 = time.perf_counter()
     result = auto.compute(label, score)
     seconds = time.perf_counter() - t0
+    result['full'] = AdjustedVUS(eng).compute(label, score)          # plain VUS-PR and Adjusted VUS, no selection
     return result, auto.buffers.tolist(), seconds
 
 
@@ -207,25 +226,25 @@ def anomaly_summary(k, a):
 
 
 @app.get('/select')
-def select(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(256),
-           rule: str = Query('paper'), sides: str = Query('per_side'), gpu: bool = Query(False)):
-    if rule not in AutoVUS.RULES or sides not in AutoVUS.SIDES:
-        raise HTTPException(400, 'bad rule or sides')
+def select(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(128),
+           rule: str = Query('paper'), sides: str = Query('symmetric'), gpu: bool = Query(False)):
+    check_variant(rule, sides)
     result, buffers, seconds = selection(b, file, detector, L, rule, sides, gpu)
     return {
         'file': file, 'detector': detector, 'L': L, 'rule': rule, 'sides': sides, 'engine': 'gpu' if gpu and HAS_GPU else 'cpu',
         'seconds': seconds,
-        'autovus': float(result['skill_adapt']), 'vus_adapt': float(result['vus_adapt']),
-        'vus_full': float(result['vus_full']), 'skill_full': float(result['skill_full']),
-        'random_full': float(result['random_full']),
+        'autovus': result['adjusted'], 'vus_adapt': result['vus'],
+        'vus_full': result['full']['vus'], 'skill_full': result['full']['adjusted'],
+        'random_full': result['full']['random'],
         'anomalies': [anomaly_summary(k, a) for k, a in enumerate(result['anomalies'])],
     }
 
 
 @app.get('/curves')
-def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = Query(256),
-           rule: str = Query('paper'), sides: str = Query('per_side'), gpu: bool = Query(False)):
+def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = Query(128),
+           rule: str = Query('paper'), sides: str = Query('symmetric'), gpu: bool = Query(False)):
     """The three curves of one anomaly, per side: the detector curve, the random curve, the rule curve."""
+    check_variant(rule, sides)
     result, buffers, _ = selection(b, file, detector, L, rule, sides, gpu)
     if k < 0 or k >= len(result['anomalies']):
         raise HTTPException(404, 'no such anomaly')
@@ -249,21 +268,23 @@ def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = 
 
 
 @app.get('/rank')
-def rank(file: str, b: str = Query('tsb-ad'), L: int = Query(256), rule: str = Query('paper'),
-         sides: str = Query('per_side'), metric: str = Query('autovus')):
-    """Every detector on this series by AutoVUS (from the export when present, else computed live)."""
+def rank(file: str, b: str = Query('tsb-ad'), L: int = Query(128), rule: str = Query('paper'),
+         sides: str = Query('symmetric'), metric: str = Query('autovus')):
+    """Every detector on this series by the AutoVUS variant (from the export when present, else computed live)."""
+    check_variant(rule, sides)
+    suffix = SUFFIX[(rule, sides)]
     table = read_table(b, 'scores.json')
     rows = []
-    if table and file in table.get('files', {}) and L == table.get('L') and rule == table.get('rule') and sides == table.get('sides'):
+    if table and file in table.get('files', {}) and L == table.get('L'):
         for det, vals in table['files'][file].items():
-            rows.append({'detector': det, 'autovus': vals.get('autovus'), 'adj_vus': vals.get('skill_full'), 'vus_pr': vals.get('vus_pr'), 'auc_pr': vals.get('auc_pr')})
+            rows.append({'detector': det, 'autovus': vals.get(f'autovus{suffix}'), 'adj_vus': vals.get('skill_full'), 'vus_pr': vals.get('vus_pr'), 'auc_pr': vals.get('auc_pr')})
     else:
         dets = list(parser(b).get_detectors()) + list(REFERENCES) if not file.startswith('upload:') else []
         for det in dets:
             try:
                 result, _, _ = selection(b, file, det, L, rule, sides, False)
                 label, score, _ = load_pair(b, file, det)
-                rows.append({'detector': det, 'autovus': float(result['skill_adapt']), 'adj_vus': float(result['skill_full']), 'vus_pr': float(result['vus_full']),
+                rows.append({'detector': det, 'autovus': result['adjusted'], 'adj_vus': result['full']['adjusted'], 'vus_pr': result['full']['vus'],
                              'auc_pr': float(average_precision_score(label, score))})
             except HTTPException:
                 continue
@@ -313,14 +334,17 @@ def toy(case: str = Query('A4'), L: int = Query(20), rule: str = Query('paper'),
     if case not in TOY:
         raise HTTPException(404, 'unknown case')
     score = TOY[case]['score']
-    auto = AutoVUS(FastVUS(L=L, cumulative=True), rule=rule, sides=sides)
+    eng = FastVUS(L=L, cumulative=True)
+    check_variant(rule, sides)
+    auto = AutoVUS(eng, rule=rule, sides=sides)
     t0 = time.perf_counter()
     result = auto.compute(TOY_LABEL, score)
     seconds = time.perf_counter() - t0
+    full = AdjustedVUS(eng).compute(TOY_LABEL, score)
     a = result['anomalies'][0]
     out = {
         'case': case, 'cases': list(TOY), 'label': TOY_LABEL.tolist(), 'score': score.tolist(),
-        'seconds': seconds, 'autovus': float(result['skill_adapt']), 'vus_full': float(result['vus_full']),
+        'seconds': seconds, 'autovus': result['adjusted'], 'vus_full': full['vus'],
         'anomaly': anomaly_summary(0, a), 'buffers': auto.buffers.tolist(), 'sides': {},
     }
     for side in (('left', 'right') if sides == 'per_side' else ('both',)):
@@ -343,7 +367,7 @@ def _median_time(fn, repeats):
 
 
 @app.get('/time')
-def time_metrics(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(256), repeats: int = Query(3),
+def time_metrics(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(128), repeats: int = Query(3),
                  metrics: str = Query('autovus,vus_cpu,vus_gpu,vus_upstream,auc_pr,auc_roc,rf,affiliation,pate')):
     label, score, _ = load_pair(b, file, detector)
     T = int(len(label))
@@ -354,8 +378,8 @@ def time_metrics(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Qu
         try:
             if m == 'autovus':
                 eng = FastVUS(L=L, cumulative=True)
-                row['seconds'], r = _median_time(lambda: AutoVUS(eng, rule='paper', sides='per_side').compute(label, score), repeats)
-                row['value'] = float(r['skill_adapt'])
+                row['seconds'], r = _median_time(lambda: AutoVUS(eng).compute(label, score), repeats)
+                row['value'] = r['adjusted']
             elif m == 'vus_cpu':
                 eng = FastVUS(L=L)
                 row['seconds'], v = _median_time(lambda: eng.compute(label, score), repeats)

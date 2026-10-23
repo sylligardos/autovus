@@ -32,7 +32,7 @@ Checks (toy data, no benchmark files): `src/experiments/check_fastvus.py`, `chec
 Demo:
 
 ```bash
-conda run -n autovus streamlit run src/demo/demo_vus.py
+# see app/README.md: FastAPI (app/api) + Next.js (app/web)
 ```
 
 ## Layout
@@ -40,7 +40,7 @@ conda run -n autovus streamlit run src/demo/demo_vus.py
 - `src/autovus/`: the metric (FastVUS CPU and GPU, AutoVUS).
 - `src/baselines/`: upstream TSB-AD metrics (vendored, untouched) and PATE, behind one `compute()` function.
 - `src/experiments/`: experiment and check scripts. Run them from the repo root. The experiment scripts still use the old classes and are ported one by one when rerun.
-- `src/demo/`: the Streamlit demo.
+- `app/`: the demo (FastAPI + Next.js) and its export.
 - `src/notebooks/`: analysis notebooks.
 - `scripts/`: CLEPS cluster job scripts (cluster env is still called `ffvus`).
 - `references/`: paper plan, feedback, past submissions. The paper itself lives in Overleaf.

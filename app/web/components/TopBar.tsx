@@ -1,8 +1,7 @@
 import Link from "next/link";
-import { BENCHMARKS, PAGES, State, href } from "@/lib/model";
+import { PAGES, State, href } from "@/lib/model";
 import { HelpButton } from "./HelpButton";
 import { ThemeToggle } from "./ThemeToggle";
-import { BenchmarkSelect } from "./BenchmarkSelect";
 
 export function TopBar({ state, current }: { state: State; current: string }) {
   return (
@@ -22,7 +21,6 @@ export function TopBar({ state, current }: { state: State; current: string }) {
         ))}
       </nav>
       <div className="controls">
-        <BenchmarkSelect value={state.benchmark} options={BENCHMARKS} current={current} />
         <ThemeToggle />
         <HelpButton page={current} />
       </div>

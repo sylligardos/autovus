@@ -8,14 +8,15 @@ import { loadTime, upload } from "@/lib/api";
 import { fmt, fsec, href, type State, type Tables, type TimeDoc } from "@/lib/model";
 import { median } from "@/lib/stats";
 import { expand, type CompactTables } from "@/lib/compact";
+import { useRemembered } from "@/lib/remember";
 
 type Bar = { label: string; seconds: number | null; tag: string; color: string; note?: string };
 const LOG_MIN = 60, LOG_MAX = 10 * 86400;
-const logw = (s: number | null, lo = LOG_MIN, hi = LOG_MAX) => (s === null || s <= 0 ? 0 : Math.max(0, Math.min(100, ((Math.log10(s) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * 100)));
+const logw = (s: number | null, lo = LOG_MIN, hi = LOG_MAX) => (s === null || s <= 0 ? 0 : Math.round(100 * Math.max(0, Math.min(100, ((Math.log10(s) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * 100))) / 100);
 
 export function SpeedView({ state, tables: packed }: { state: State; tables: CompactTables }) {
   const tables = useMemo(() => expand(packed), [packed]);
-  const [scope, setScope] = useState("");
+  const [scope, setScope] = useRemembered(`speed:${state.benchmark}:scope`, "");
   const datasets = useMemo(() => Array.from(new Set(tables.rows.map((r) => r.dataset))).sort(), [tables.rows]);
   const rows = useMemo(() => tables.rows.filter((r) => !scope || r.dataset === scope), [tables.rows, scope]);
   const nDet = new Set(rows.map((r) => r.detector)).size || 1;
@@ -57,8 +58,10 @@ export function SpeedView({ state, tables: packed }: { state: State; tables: Com
     return { file: f, n: rs[0]?.n ?? 0, cpu: median(rs.map((r) => r.t_vus)), auto: median(rs.map((r) => r.t_autovus)), gpu: tables.gpu?.seconds[f] ?? null };
   }), [files, rows, tables.gpu]);
   const W = 720, H = 300;
-  const sx = (n: number) => 60 + ((Math.log10(Math.max(n, 1000)) - 3) / 3) * 600;
-  const sy = (t: number) => 20 + ((3 - Math.log10(Math.max(t, 1e-3))) / 6) * 260;
+  // Rounded: the server's and the browser's log10 can differ in the last digits, which breaks hydration.
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const sx = (n: number) => r2(60 + ((Math.log10(Math.max(n, 1000)) - 3) / 3) * 600);
+  const sy = (t: number) => r2(20 + ((3 - Math.log10(Math.max(t, 1e-3))) / 6) * 260);
 
   const byDataset = useMemo(() => datasets.map((d) => {
     const rs = tables.rows.filter((r) => r.dataset === d);

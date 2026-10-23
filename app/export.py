@@ -2,8 +2,9 @@
 Precompute the tables the demo reads (app/data/<benchmark>/).
 
 Phase 1, every series x every detector plus the two reference detectors:
-    AUC-PR, AUC-ROC (sklearn), VUS-PR, VUS-ROC (FastVUS, L), AutoVUS (per side,
-    paper rule), per-anomaly buffers and types, FastVUS and AutoVUS times.
+    AUC-PR, AUC-ROC (sklearn), VUS-PR, VUS-ROC (FastVUS, L), Adjusted VUS, and
+    AutoVUS in four variants (VARIANTS: paper / ratio rule x symmetric / per
+    side), each with its per-anomaly buffers and labels, plus the times.
 Phase 2, timings of the slow baselines on a subset of short series:
     upstream VUS, Range-F1, Affiliation-F1, PATE.
 Phase 3, FastVUS GPU time on every series, one detector.
@@ -11,11 +12,12 @@ Phase 3, FastVUS GPU time on every series, one detector.
 Writes:
     summary.json   counts
     series.json    file -> {dataset, n, anomalies}
-    scores.json    {L, rule, sides, detectors, files: {file: {detector: {...}}}}
-    anomalies.csv  file, detector, k, start, end, b_left, b_right, type
+    scores.json    {L, variants, detectors, files: {file: {detector: {...}}}}
+                   AutoVUS fields carry the variant's suffix: autovus, autovus_ps, ...
+    anomalies.csv  file, detector, k, start, end, then b_left, b_right, type per variant
     times.json     the timings of phases 1 to 3
 
-    conda run -n autovus python app/export.py --L 256 --workers 6
+    conda run -n autovus python app/export.py --L 128 --workers 4
     conda run -n autovus python app/export.py --phase 2 --subset 2
 """
 import argparse
@@ -35,12 +37,16 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, 'src'))
 from tsad_parser import TSADParser  # noqa: E402
-from autovus import FastVUS, AutoVUS  # noqa: E402
+from autovus import FastVUS, AdjustedVUS, AutoVUS  # noqa: E402
 sys.path.insert(0, os.path.join(_ROOT, 'app', 'api'))
 from bench import load_series, load_score  # noqa: E402
 
 ORACLE_DELAY = 64
 REFERENCES = ('Delayed oracle', 'Random')
+# AutoVUS variants: field suffix -> (rule, sides). '' is the paper's AutoVUS.
+VARIANTS = {'': ('paper', 'symmetric'), '_ps': ('paper', 'per_side'),
+            '_ratio': ('ratio', 'symmetric'), '_ratio_ps': ('ratio', 'per_side')}
+LABELS = ('exact', 'early', 'late', 'wide', 'missed')
 OUT = os.path.join(_ROOT, 'app', 'data', 'tsb-ad')
 
 
@@ -74,7 +80,7 @@ def _single_thread():
 
 def one_series(args):
     """Phase 1 for one series: every detector and the references."""
-    file, L, rule, sides, detectors = args
+    file, L, detectors = args
     p = TSADParser()
     _, label = load_series(p, file)
     T = len(label)
@@ -89,7 +95,8 @@ def one_series(args):
     for det in REFERENCES:
         scores[det] = reference_score(det, label)
     eng = FastVUS(L=L, cumulative=True)
-    auto = AutoVUS(eng, rule=rule, sides=sides)
+    adjusted = AdjustedVUS(eng)
+    autos = {suf: AutoVUS(eng, rule=rule, sides=sides) for suf, (rule, sides) in VARIANTS.items()}
     for det, score in scores.items():
         n = min(T, len(score))
         lab, sco = label[:n], score[:n]
@@ -98,35 +105,41 @@ def one_series(args):
         row = {}
         try:
             t0 = time.perf_counter()
-            vus = np.asarray(eng.compute(lab, sco))
+            adj = adjusted.compute(lab, sco)                # one engine run: VUS-PR, random, Adjusted VUS
             row['t_vus'] = time.perf_counter() - t0
-            row['vus_pr'] = float(vus[-1])
+            row['vus_pr'] = adj['vus']
+            row['skill_full'] = adj['adjusted']
+            row['random_full'] = adj['random']
             roc = np.asarray(eng.compute(lab, sco, metric='roc'))
             row['vus_roc'] = float(roc[-1])
             row['auc_pr'] = float(average_precision_score(lab, sco))
             row['auc_roc'] = float(roc_auc_score(lab, sco)) if lab.sum() < n else None
-            t0 = time.perf_counter()
-            r = auto.compute(lab, sco)
-            row['t_autovus'] = time.perf_counter() - t0
-            row['autovus'] = float(r['skill_adapt'])
-            row['vus_adapt'] = float(r['vus_adapt'])
-            row['skill_full'] = float(r['skill_full'])
-            row['random_full'] = float(r['random_full'])
-            types = [a['detection'] for a in r['anomalies']]
-            row['n_anomalies'] = len(types)
-            for t in ('exact', 'early', 'late', 'missed', 'both'):
-                row[f'n_{t}'] = types.count(t)
-            row['b_left'] = float(np.mean([a['left']['buffer_val'] for a in r['anomalies']]))
-            row['b_right'] = float(np.mean([a['right']['buffer_val'] for a in r['anomalies']]))
-            for k, a in enumerate(r['anomalies']):
-                anoms.append((file, det, k, a['start'], a['end'], a['left']['buffer_val'], a['right']['buffer_val'], a['detection']))
+            per_anomaly = []
+            for suf, auto in autos.items():
+                t0 = time.perf_counter()
+                r = auto.compute(lab, sco)
+                row[f't_autovus{suf}'] = time.perf_counter() - t0
+                row[f'autovus{suf}'] = r['adjusted']
+                row[f'vus_adapt{suf}'] = r['vus']
+                types = [a['detection'] for a in r['anomalies']]
+                for t in LABELS:
+                    row[f'n_{t}{suf}'] = types.count(t)
+                row[f'b_left{suf}'] = float(np.mean([a['left']['buffer_val'] for a in r['anomalies']]))
+                row[f'b_right{suf}'] = float(np.mean([a['right']['buffer_val'] for a in r['anomalies']]))
+                per_anomaly.append(r['anomalies'])
+            row['n_anomalies'] = len(per_anomaly[0])
+            for k, a in enumerate(per_anomaly[0]):
+                cells = [file, det, k, a['start'], a['end']]
+                for v in per_anomaly:
+                    cells += [v[k]['left']['buffer_val'], v[k]['right']['buffer_val'], v[k]['detection']]
+                anoms.append(tuple(cells))
         except Exception as e:  # noqa: BLE001
             row['error'] = str(e)[:120]
         rows[det] = row
     return file, T, len(runs(label)), rows, anoms
 
 
-def phase1(L, rule, sides, workers, limit):
+def phase1(L, workers, limit):
     p = TSADParser()
     meta = p.meta
     detectors = list(p.get_detectors())
@@ -138,7 +151,10 @@ def phase1(L, rule, sides, workers, limit):
     scores, series, anom_rows = {}, {}, []
     if os.path.exists(os.path.join(OUT, 'scores.json')):                 # resume: keep what an earlier run saved
         with open(os.path.join(OUT, 'scores.json')) as f:
-            scores = json.load(f)['files']
+            old = json.load(f)
+        if old.get('L') != L or old.get('variants') != json.loads(json.dumps(VARIANTS)):
+            sys.exit(f'{OUT} holds an export with other settings (L={old.get("L")}); move it away first')
+        scores = old['files']
         with open(os.path.join(OUT, 'series.json')) as f:
             series = json.load(f)
         with open(os.path.join(OUT, 'anomalies.csv'), newline='') as f:
@@ -151,19 +167,19 @@ def phase1(L, rule, sides, workers, limit):
         with open(os.path.join(OUT, 'series.json'), 'w') as f:
             json.dump(series, f)
         with open(os.path.join(OUT, 'scores.json'), 'w') as f:
-            json.dump({'L': L, 'rule': rule, 'sides': sides, 'detectors': detectors, 'references': list(REFERENCES), 'files': scores}, f)
+            json.dump({'L': L, 'variants': VARIANTS, 'detectors': detectors, 'references': list(REFERENCES), 'files': scores}, f)
         with open(os.path.join(OUT, 'anomalies.csv'), 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['file', 'detector', 'k', 'start', 'end', 'b_left', 'b_right', 'type'])
+            w.writerow(['file', 'detector', 'k', 'start', 'end'] + [f'{c}{suf}' for suf in VARIANTS for c in ('b_left', 'b_right', 'type')])
             w.writerows(anom_rows)
         with open(os.path.join(OUT, 'summary.json'), 'w') as f:
             json.dump({'n_series': len(series), 'n_series_total': len(files), 'done': done,
                        'n_datasets': int(meta['dataset'].nunique()), 'n_detectors': len(detectors),
                        'n_anomalies': sum(s['anomalies'] for s in series.values()), 'n_points': int(sum(s['n'] for s in series.values())),
-                       'L': L, 'rule': rule, 'sides': sides, 'oracle_delay': ORACLE_DELAY,
+                       'L': L, 'variants': VARIANTS, 'oracle_delay': ORACLE_DELAY,
                        'phase1_seconds': time.time() - t0, 'workers': workers}, f, indent=1)
 
-    jobs = [(f, L, rule, sides, detectors) for f in files]
+    jobs = [(f, L, detectors) for f in files]
     with Pool(workers, initializer=_single_thread) as pool:
         for i, (file, T, n_anom, rows, anoms) in enumerate(pool.imap_unordered(one_series, jobs), 1):
             dataset = meta.loc[meta['filename'] == file, 'dataset'].iloc[0]
@@ -257,17 +273,15 @@ def phase3(L):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--L', type=int, default=256)
-    ap.add_argument('--rule', default='paper')
-    ap.add_argument('--sides', default='per_side')
-    ap.add_argument('--workers', type=int, default=6)
+    ap.add_argument('--L', type=int, default=128)
+    ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--phase', type=int, default=0, help='0 = all, else one phase')
     ap.add_argument('--limit', type=int, default=0, help='phase 1: only the first N series (smoke test)')
     ap.add_argument('--subset', type=int, default=2, help='phase 2: series per dataset')
     ap.add_argument('--max-T', type=int, default=60_000, help='phase 2: longest series timed')
     a = ap.parse_args()
     if a.phase in (0, 1):
-        phase1(a.L, a.rule, a.sides, a.workers, a.limit)
+        phase1(a.L, a.workers, a.limit)
     if a.phase in (0, 2):
         phase2(a.L, a.subset, a.max_T)
     if a.phase in (0, 3):

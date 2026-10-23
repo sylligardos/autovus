@@ -73,7 +73,7 @@ def main():
           f"fast - exact: max |.| {np.abs(a[:, 2] - a[:, 1]).max():.1e}; gpu - fast: max |.| {np.abs(a[:, 3] - a[:, 2]).max():.1e}")
 
     print('\nAutoVUS end to end (CPU engine; GPU engine in brackets where it differs):')
-    print(f"{'series':44s} {'det':19s} {'vus_full':>8s} {'vus_adapt':>9s} {'skill_adapt':>11s} {'t_cpu':>6s} {'t_gpu':>6s}  per-anomaly (b*_left, b*_right, type)")
+    print(f"{'series':44s} {'det':19s} {'vus_adapt':>9s} {'autovus':>8s} {'t_cpu':>6s} {'t_gpu':>6s}  per-anomaly (b*_left, b*_right, type)")
     for fname, label, det_scores in zip(fnames, labels, scores):
         label = np.asarray(label).astype(int)
         for det, score in zip(DETECTORS, det_scores):
@@ -88,8 +88,8 @@ def main():
                 gg = (a_g['left']['buffer_val'], a_g['right']['buffer_val'], a_g['detection'][0])
                 per.append(f"{c[0]},{c[1]}{c[2]}" + ('' if c == gg else f"[{gg[0]},{gg[1]}{gg[2]}]"))
             summary = ' '.join(per[:12]) + (' ...' if len(per) > 12 else '')
-            diff = '' if abs(r['vus_adapt'] - g['vus_adapt']) < 1e-4 else f" [gpu vus_adapt {g['vus_adapt']:.5f}]"
-            print(f"{fname[:44]:44s} {det:19s} {r['vus_full']:8.4f} {r['vus_adapt']:9.4f} {r['skill_adapt']:11.4f} {t_c:5.2f}s {t_g:5.2f}s  {summary}{diff}")
+            diff = '' if abs(r['vus'] - g['vus']) < 1e-4 else f" [gpu vus_adapt {g['vus']:.5f}]"
+            print(f"{fname[:44]:44s} {det:19s} {r['vus']:9.4f} {r['adjusted']:8.4f} {t_c:5.2f}s {t_g:5.2f}s  {summary}{diff}")
 
 
 if __name__ == '__main__':
