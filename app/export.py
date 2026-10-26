@@ -3,8 +3,7 @@ Precompute the tables the demo reads (app/data/<benchmark>/).
 
 Phase 1, every series x every detector plus the two reference detectors:
     AUC-PR, AUC-ROC (sklearn), VUS-PR, VUS-ROC (FastVUS, L), Adjusted VUS, and
-    AutoVUS in four variants (VARIANTS: paper / ratio rule x symmetric / per
-    side), each with its per-anomaly buffers and labels, plus the times.
+    AutoVUS (VARIANTS) with its per-anomaly buffers and labels, plus the times.
 Phase 2, timings of the slow baselines on a subset of short series:
     upstream VUS, Range-F1, Affiliation-F1, PATE.
 Phase 3, FastVUS GPU time on every series, one detector.
@@ -43,9 +42,8 @@ from bench import load_series, load_score  # noqa: E402
 
 ORACLE_DELAY = 64
 REFERENCES = ('Delayed oracle', 'Random')
-# AutoVUS variants: field suffix -> (rule, sides). '' is the paper's AutoVUS.
-VARIANTS = {'': ('paper', 'symmetric'), '_ps': ('paper', 'per_side'),
-            '_ratio': ('ratio', 'symmetric'), '_ratio_ps': ('ratio', 'per_side')}
+# AutoVUS variants: field suffix -> (rule, sides). '' is the paper's AutoVUS, the only one kept.
+VARIANTS = {'': ('paper', 'symmetric')}
 LABELS = ('exact', 'early', 'late', 'wide', 'missed')
 OUT = os.path.join(_ROOT, 'app', 'data', 'tsb-ad')
 
