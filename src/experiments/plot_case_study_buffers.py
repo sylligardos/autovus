@@ -5,7 +5,9 @@
 
 Scores are computed here with the same calls as the demo export (app/export.py one_series,
 paper AutoVUS), at L=16. Pink = label.
-Usage: conda run -n autovus python src/experiments/plot_case_study_buffers.py OUT.pdf [OUT.png]
+Pink = label, faded orange = the buffers AutoVUS selects per anomaly.
+Usage: conda run -n autovus python src/experiments/plot_case_study_buffers.py [TAG]
+Writes experiments/figures/case_study_tsb_L{L}[_TAG].pdf and .png.
 """
 import os, sys
 import numpy as np
@@ -21,12 +23,13 @@ from tsad_parser import TSADParser  # noqa: E402
 from bench import load_series, load_score  # noqa: E402
 from export import one_series  # noqa: E402
 
-L = 16
+L = 20
 CASES = [
     ("798_YAHOO_id_248", "798_YAHOO_id_248_WebService_tr_500_1st_105.csv", ["Chronos", "Sub_KNN"]),
     ("282_NEK_id_6", "282_NEK_id_6_WebService_tr_500_1st_64.csv", ["OmniAnomaly", "Sub_PCA"]),
 ]
 PINK = "#ff69b4"
+ORANGE = "#ff8c00"
 
 
 def span(ax, a, b, color, alpha, minw):
@@ -52,12 +55,15 @@ def main(out_pdf, out_png=None):
             ax = fig.add_subplot(gs[rows[3 * ci + ri]])
             own = [a for a in anoms if a[1] == (name if r is not None else dets[0])]
             for _, _, _, s, e, bl, br, _ in own:
+                if r is not None and (bl > 0 or br > 0):
+                    span(ax, s - bl, e + br, ORANGE, 0.25, minw)
                 span(ax, s, e, PINK, 0.35, minw)
             ax.plot(x, y, linewidth=1.6, color="#1f5fbf")
             ax.set_xlim(lo, hi - 1); ax.set_yticks([]); ax.margins(x=0)
             ax.text(0.985, 0.90, name, transform=ax.transAxes, fontsize=26, fontweight="bold", ha="right", va="top",
                     bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.7, edgecolor="none"))
             if r is not None:
+                print(f"{name_ts} {name}: VUS@{L} {r['vus_pr']:.3f} AutoVUS {r['autovus']:.3f} b* {[int(a[5]) for a in own]} {[a[7] for a in own]}")
                 ax.text(0.01, 0.92, f"VUS@{L} = {r['vus_pr']:.3f}\nAutoVUS = {r['autovus']:.3f}",
                         transform=ax.transAxes, fontsize=24, fontweight="bold", va="top", ha="left",
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.93, edgecolor="gray"))
@@ -71,4 +77,9 @@ def main(out_pdf, out_png=None):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
+    tag = ("_" + sys.argv[1]) if len(sys.argv) > 1 else ""
+    outdir = os.path.join(ROOT, "experiments", "figures")
+    os.makedirs(outdir, exist_ok=True)
+    stem = os.path.join(outdir, f"case_study_tsb_L{L}{tag}")
+    main(stem + ".pdf", stem + ".png")
+    print("saved:", stem + ".pdf")

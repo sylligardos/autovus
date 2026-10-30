@@ -26,7 +26,7 @@ class AutoVUS:
     RULES = ('paper', 'ratio')
     SIDES = ('symmetric', 'per_side')
 
-    def __init__(self, engine, rule='paper', sides='symmetric'):
+    def __init__(self, engine, rule='paper', sides='symmetric', dust_floor=1e-6, min_signal_frac=1e-3):
         """
         Args:
             engine: FastVUS or FastVUSGPU built with cumulative=True.
@@ -36,6 +36,14 @@ class AutoVUS:
             sides (str): 'symmetric' selects one buffer used on both sides of
                 every anomaly; 'per_side' selects the left and the right
                 buffer separately.
+            dust_floor (float): scores below dust_floor * max|score| are set
+                to 0 before selection (relative). Numerically-nonzero dust
+                (e.g. softmax underflow) would otherwise add bottom thresholds
+                that a growing buffer reaches one by one, bumping the marginal
+                ratio and the argmax with it. 0 or None disables it.
+            min_signal_frac (float): an anomaly whose window holds no score
+                above min_signal_frac * max|score| gets b* = 0 (no signal to
+                fit a buffer to). 0 or None disables it.
         AutoVUS is defined over VUS-PR only.
         """
         if not engine.cumulative:
@@ -48,6 +56,8 @@ class AutoVUS:
         self.adjusted = AdjustedVUS(engine)
         self.rule = rule
         self.sides = sides
+        self.dust_floor = dust_floor or 0.0
+        self.min_signal_frac = min_signal_frac or 0.0
         self.anomalies = []
 
     @property
@@ -70,14 +80,14 @@ class AutoVUS:
             return (A - A[0] + 1.0) / np.clip(g - g[0] + 1.0, 1e-10, None)
         return A / np.clip(g, 1e-10, None)
 
-    def select_buffer(self, vus, random):
+    def select_buffer(self, vus, random, no_signal=False):
         """b* from the cumulative curves of the detector and of a random detector.
 
-        b* is the first argmax of the rule curve. core_ratio = vus[0] / random[0]
+        b* is the first argmax of the rule curve (0 when no_signal, see min_signal_frac). core_ratio = vus[0] / random[0]
         says whether the anomaly is detected inside its own interval at all.
         """
         ratio = self.rule_curve(vus, random)
-        idx = int(np.argmax(ratio))
+        idx = 0 if no_signal else int(np.argmax(ratio))
         return {
             'buffer_idx': idx,
             'buffer_val': int(self.buffers[idx]),
@@ -117,6 +127,9 @@ class AutoVUS:
         score = np.asarray(score, dtype=float)
         T = len(label)
         start, end = self._coordinates(label)
+        smax = float(np.max(np.abs(score))) if T else 0.0
+        if self.dust_floor and smax > 0:
+            score = np.where(np.abs(score) < self.dust_floor * smax, 0.0, score)
 
         side, zita = self.engine.side, self.engine.zita
         self.engine.zita = 1.0
@@ -128,7 +141,8 @@ class AutoVUS:
                 anomaly = {'start': int(start[k]), 'end': int(end[k]), 'window': (lo, hi)}
                 for name in (('left', 'right') if self.sides == 'per_side' else ('both',)):
                     self.engine.side = name
-                    anomaly[name] = self.select_buffer(*self.adjusted.curves(label[lo:hi], score[lo:hi]))
+                    no_signal = bool(self.min_signal_frac) and float(np.max(np.abs(score[lo:hi]))) < self.min_signal_frac * smax
+                    anomaly[name] = self.select_buffer(*self.adjusted.curves(label[lo:hi], score[lo:hi]), no_signal=no_signal)
                 if self.sides == 'symmetric':
                     anomaly['left'] = anomaly['right'] = anomaly.pop('both')
                 anomaly['detection'] = self.classify_detection(anomaly)
