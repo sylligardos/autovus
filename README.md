@@ -44,6 +44,7 @@ Demo:
 - `src/notebooks/`: analysis notebooks.
 - `scripts/`: CLEPS cluster job scripts (cluster env is still called `ffvus`).
 - `references/`: paper plan, feedback, past submissions. The paper itself lives in Overleaf.
+- `docs/supplementary/`: results left out of the paper for space reasons.
 - `experiments/`: outputs (not in git). Old results are in `~/Documents/autovus-archive/`.
 
 ## License
