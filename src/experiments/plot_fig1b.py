@@ -64,7 +64,7 @@ def main(out_pdf, out_png=None):
                     transform=ax.transAxes, fontsize=24, fontweight="bold", va="top", ha="left",
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.93, edgecolor="gray"))
         if ri == 0:
-            ax.text(0.01, 0.90, "(b)", transform=ax.transAxes, fontsize=26, ha="left", va="top")
+            ax.text(0.01, 0.90, "(b)", transform=ax.transAxes, fontsize=26, fontweight="bold", ha="left", va="top")
         if ri == 2:
             ax.set_xlabel("Time index", fontsize=28)
         else:
