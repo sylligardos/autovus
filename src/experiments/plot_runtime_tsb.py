@@ -63,20 +63,20 @@ for metric in df['Metric'].unique():
 median_times = df.groupby('Metric')['Metric time'].median()
 order = median_times.sort_values().index.to_list()
 
-fig = plt.figure(figsize=(5.1, 2.6))
+fig = plt.figure(figsize=(5.1, 3.3))
 medianprops = dict(linestyle='-', linewidth=2, color='white')
 axis = sns.boxplot(
     y='Metric time', x='Metric', hue='Metric', data=df, showfliers=False, log_scale=True,
     showmeans=False, medianprops=medianprops, palette=color_palette, order=order, saturation=1,
 )
-axis.set_ylabel('Runtime (secs; log)')
+axis.set_ylabel('Runtime per series (secs; log)')
 axis.set_xlabel('')
 axis.tick_params(axis='x', rotation=25)
 axis.grid(visible=False, axis='x')
 axis.hlines(y=10.5, xmin=-1, xmax=7, linestyle='--', lw=1, color='k')
 axis.set_xlim(-0.5, 6.5)
-axis.set_ylim(0, 400)
-axis.text(2.5, 230, 'Total time:')
+axis.set_ylim(0, 80)
+axis.text(2.5, 40, 'Total time:')
 
 for i, metric in enumerate(order):
     total = df.loc[df['Metric'] == metric].groupby(['Time series', 'Detector'])['Metric time'].mean().sum()
@@ -86,7 +86,7 @@ for i, metric in enumerate(order):
         m, s = divmod(int(total), 60); label = f'{m}m {s}s'
     else:
         label = f'{total:.0f}s'
-    axis.text(i, 60, label, ha='center', va='top', fontsize='small')
+    axis.text(i, 25, label, ha='center', va='top', fontsize='small')
     print(f"{metric}: total time {label}")
 
 # --- notebook cell 14 (old Fig 1a): the "Nx faster" arrows, VUS box now at position 6 -----
@@ -94,11 +94,11 @@ i_vus = order.index(metric_to_compare)
 for i, metric in enumerate(order):
     if my_vus_name in metric:
         axis.annotate(
-            f'{speed_up_dict[metric]:.0f}$\\times$ faster',
-            xy=(i_vus, 0.7),
-            xytext=(i - 0.45, 0.1) if 'GPU' in metric else (i - 0.3, 0.6),
-            arrowprops=dict(arrowstyle="<-", connectionstyle=f"arc3,rad={-.05 if 'GPU' in metric else -.15}", color='k', alpha=0.8),
-            va='top' if 'GPU' in metric else 'bottom', ha='left',
+            f'{speed_up_dict[metric]:.0f}$\\times$\nfaster',
+            xy=(i_vus, 1.5),
+            xytext=(i - 0.35, 0.1) if 'GPU' in metric else (i - 0.25, .8),
+            arrowprops=dict(arrowstyle="<-", connectionstyle=f"arc3,rad={-.42 if 'GPU' in metric else -.2}", color='k', alpha=0.8),
+            va='top', ha='left',
         )
 
 xticklabels = axis.get_xticklabels()
