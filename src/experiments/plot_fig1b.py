@@ -22,7 +22,7 @@ from export import one_series  # noqa: E402
 
 L = 20
 NAME, FILE, DETS = "704_YAHOO_id_154", "704_YAHOO_id_154_WebService_tr_500_1st_541.csv", ["LOF", "SAND"]
-PINK = "#ff69b4"
+PINK = "#d62728"  # red (was hot pink #ff69b4)
 ORANGE = "#ff8c00"
 
 
@@ -52,7 +52,7 @@ def main(out_pdf, out_png=None):
                     ax.axvline(xb, color="grey", linestyle="--", linewidth=1.6)
             if r is not None and (bl > 0 or br > 0):
                 span(ax, s - bl, e + br, ORANGE, 0.25, minw)
-            span(ax, s, e, PINK, 0.35, minw)
+            span(ax, s, e, PINK, 0.5, minw)
         ax.plot(x, y, linewidth=1.6, color="#1f5fbf")
         ax.set_xlim(lo, hi - 1); ax.set_yticks([]); ax.margins(x=0)
         ax.text(0.985, 0.90, name, transform=ax.transAxes, fontsize=26, fontweight="bold", ha="right", va="top",

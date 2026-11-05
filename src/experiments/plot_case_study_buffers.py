@@ -28,7 +28,7 @@ CASES = [
     ("798_YAHOO_id_248", "798_YAHOO_id_248_WebService_tr_500_1st_105.csv", ["Chronos", "Sub_KNN"]),
     ("282_NEK_id_6", "282_NEK_id_6_WebService_tr_500_1st_64.csv", ["OmniAnomaly", "Sub_PCA"]),
 ]
-PINK = "#ff69b4"
+PINK = "#d62728"  # red (was hot pink #ff69b4)
 ORANGE = "#ff8c00"
 
 
@@ -57,7 +57,7 @@ def main(out_pdf, out_png=None):
             for _, _, _, s, e, bl, br, _ in own:
                 if r is not None and (bl > 0 or br > 0):
                     span(ax, s - bl, e + br, ORANGE, 0.25, minw)
-                span(ax, s, e, PINK, 0.35, minw)
+                span(ax, s, e, PINK, 0.5, minw)
             ax.plot(x, y, linewidth=1.6, color="#1f5fbf")
             ax.set_xlim(lo, hi - 1); ax.set_yticks([]); ax.margins(x=0)
             ax.text(0.985, 0.90, name, transform=ax.transAxes, fontsize=26, fontweight="bold", ha="right", va="top",
