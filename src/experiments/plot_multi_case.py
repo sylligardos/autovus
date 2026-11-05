@@ -157,7 +157,7 @@ def draw_table(ax, title, rows):
 def main(L, out_pdf, out_png=None):
     res = score_all(L)
     plt.rcParams.update({"font.family": "DejaVu Sans", "mathtext.fontset": "dejavuserif"})
-    fig = plt.figure(figsize=(12.0, 6.9))
+    fig = plt.figure(figsize=(12.0, 6.0))
     gs = GridSpec(3, 2, width_ratios=[1.25, 1.0], hspace=0.16, wspace=0.06, figure=fig, left=0.02, right=0.98, top=0.93, bottom=0.07)
     for row, (title, iv, s1, s2, rows) in enumerate(res):
         ax = fig.add_subplot(gs[row, 0]); ax_t = fig.add_subplot(gs[row, 1])
