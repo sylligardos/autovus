@@ -57,8 +57,8 @@ def panel_a():
     ax.legend(loc="center left", bbox_to_anchor=(0.02, 0.3), ncol=1, frameon=False,
               handlelength=1.0, borderaxespad=0, labelspacing=0.2, fontsize=6)
     for s in ax.spines.values(): s.set_visible(True)
-    fig.savefig(f"{OUT}/error_ecdf_small.pdf")
-    fig.savefig(f"{OUT}/error_ecdf_small.png", dpi=300)
+    fig.savefig(f"{OUT}/error_ecdf_small.pdf", bbox_inches="tight", pad_inches=0)
+    fig.savefig(f"{OUT}/error_ecdf_small.png", dpi=300, bbox_inches="tight", pad_inches=0)
     print("cpu max %.2e, gpu max %.2e, %d pairs" % (e_cpu.max(), e_gpu.max(), len(d)))
 
 
@@ -92,8 +92,8 @@ def panel_b():
     ax.grid(True, axis="x", alpha=0.3, lw=0.4, zorder=0); ax.set_axisbelow(True)
     ax.tick_params(axis="y", length=0)
     for s_ in ax.spines.values(): s_.set_visible(True)
-    fig.savefig(f"{OUT}/ablation_small.pdf")
-    fig.savefig(f"{OUT}/ablation_small.png", dpi=300)
+    fig.savefig(f"{OUT}/ablation_small.pdf", bbox_inches="tight", pad_inches=0)
+    fig.savefig(f"{OUT}/ablation_small.png", dpi=300, bbox_inches="tight", pad_inches=0)
     print("ablation:", [f"{ref/t:.0f}x" for t in times])
 
 
