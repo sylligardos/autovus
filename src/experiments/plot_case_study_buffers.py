@@ -43,8 +43,8 @@ def span(ax, a, b, color, alpha, minw):
 def main(out_pdf, out_png=None):
     p = TSADParser()
     plt.rcParams.update({"font.size": 26})
-    fig = plt.figure(figsize=(24, 10.2))
-    gs = fig.add_gridspec(7, 1, height_ratios=[1.0, 0.75, 0.75, 0.30, 1.0, 0.75, 0.75], hspace=0.08)
+    fig = plt.figure(figsize=(24, 10.0))
+    gs = fig.add_gridspec(7, 1, height_ratios=[1.0, 0.75, 0.75, 0.18, 1.0, 0.75, 0.75], hspace=0.08)
     rows = [0, 1, 2, 4, 5, 6]
     for ci, (name_ts, file, dets) in enumerate(CASES):
         values, label = load_series(p, file)
@@ -67,10 +67,7 @@ def main(out_pdf, out_png=None):
                 ax.text(0.01, 0.92, f"VUS@{L} = {r['vus_pr']:.3f}\nAutoVUS = {r['autovus']:.3f}",
                         transform=ax.transAxes, fontsize=24, fontweight="bold", va="top", ha="left",
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.93, edgecolor="gray"))
-            if ri == 2 and ci == len(CASES) - 1:
-                ax.set_xlabel("Time index", fontsize=28)
-            elif ri != 2:
-                ax.tick_params(labelbottom=False)
+            ax.set_xticks([])   # no x ticks or label (space; the axis is time)
     fig.savefig(out_pdf, bbox_inches="tight", pad_inches=0)
     if out_png:
         fig.savefig(out_png, bbox_inches="tight", pad_inches=0, dpi=60)

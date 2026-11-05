@@ -94,11 +94,11 @@ i_vus = order.index(metric_to_compare)
 for i, metric in enumerate(order):
     if my_vus_name in metric:
         axis.annotate(
-            f'{speed_up_dict[metric]:.0f}$\\times$\nfaster',
-            xy=(i_vus, 1.5),
-            xytext=(i - 0.35, 0.1) if 'GPU' in metric else (i - 0.25, .45),
-            arrowprops=dict(arrowstyle="<-", connectionstyle=f"arc3,rad={-.42 if 'GPU' in metric else -.2}", color='k', alpha=0.8),
-            va='top', ha='left',
+            f'{speed_up_dict[metric]:.0f}$\\times$ faster',
+            xy=(i_vus, 0.7),
+            xytext=(i - 0.45, 0.1) if 'GPU' in metric else (i - 0.3, 0.6),
+            arrowprops=dict(arrowstyle="<-", connectionstyle=f"arc3,rad={-.05 if 'GPU' in metric else -.15}", color='k', alpha=0.8),
+            va='top' if 'GPU' in metric else 'bottom', ha='left',
         )
 
 xticklabels = axis.get_xticklabels()

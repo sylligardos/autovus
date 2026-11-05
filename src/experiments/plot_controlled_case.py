@@ -151,16 +151,14 @@ def draw_scores(ax, soft):
 def draw_table(ax, df):
     ax.axis("off")
     ax.text(0.5, 1.012, "(b) Metric comparison", ha="center", va="top", transform=ax.transAxes, fontsize=13, fontweight="bold")
-    ax.text(0.5, 0.986, "Pink/green: VUS vs. AutoVUS. Blue: F=RF=0 but Aff-F remains high.", ha="center", va="top",
-            transform=ax.transAxes, fontsize=7.7, style="italic")
     headers = ["Case"] + COLS
-    left, right, top, bottom = 0.012, 0.997, 0.962, 0.0005
+    left, right, top, bottom = 0.012, 0.997, 0.955, 0.0005
     width, n_header = right - left, 2
-    row_h = (top - bottom) / (n_header + len(df))
+    row_h = (top - bottom) / (n_header + len(df) + 0.5)   # the group-header row is 1.5 rows tall
     cw = np.array([0.115, 0.095, 0.105, 0.150, 0.110, 0.110, 0.160])
     xe = left + width * np.r_[0, np.cumsum(cw / cw.sum())]
     xc = (xe[:-1] + xe[1:]) / 2
-    ye = top - np.arange(n_header + len(df) + 1) * row_h
+    ye = top - np.r_[0, 1.5, 1.5 + np.arange(1, n_header + len(df))] * row_h
     yc = (ye[:-1] + ye[1:]) / 2
     tr = ax.transAxes
     for y, lw in ((ye[0], 1.55), (ye[2], 1.0), (ye[-1], 1.55)):
