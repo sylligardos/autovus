@@ -43,7 +43,7 @@ def span(ax, a, b, color, alpha, minw):
 def main(out_pdf, out_png=None):
     p = TSADParser()
     plt.rcParams.update({"font.size": 26})
-    fig = plt.figure(figsize=(24, 12))
+    fig = plt.figure(figsize=(24, 10.2))
     gs = fig.add_gridspec(7, 1, height_ratios=[1.0, 0.75, 0.75, 0.30, 1.0, 0.75, 0.75], hspace=0.08)
     rows = [0, 1, 2, 4, 5, 6]
     for ci, (name_ts, file, dets) in enumerate(CASES):
