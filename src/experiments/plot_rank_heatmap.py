@@ -29,8 +29,8 @@ C_SHARP, C_BROAD, DARK, FADE = "#1f6fb4", "#f25c19", "#222222", "#8a8a8a"   # pa
 CMAP = LinearSegmentedColormap.from_list('rk', plt.get_cmap('Greens')(np.linspace(0.95, 0.12, 256)))   # one hue, dark = good rank
 RMAX = 12                                                  # ranks at or above RMAX share the lightest shade
 # Layout in inches at print size (single IEEE column, 3.5 in): cell size, gaps, font size (pt).
-X0, CW, CH, PAD, GAP, BW = 0.88, 0.26, 0.2, 0.012, 0.06, 0.25
-HEAD, SEP, FS, ROT = 0.54, 0.09, 7.5, 60                   # header height, gap before the group rows, font size, header angle
+X0, CW, CH, PAD, GAP, BW = 0.88, 0.26, 0.155, 0.012, 0.06, 0.25
+HEAD, SEP, FS, ROT = 0.31, 0.05, 7.5, 30                   # header height, gap before the group rows, font size, header angle
 
 
 def main():
