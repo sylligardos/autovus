@@ -1,6 +1,6 @@
 """Fig 7 + Fig 8 side by side (paper Sec IV-A): (a) error to VUS on TSB-AD, (b) per-step ablation.
 
-Inputs (archive): all_metrics_tsb_def_params/results (VUS, FastVUS, FastVUS-GPU at L=128, 24,704 pairs)
+Inputs: experiments/all_metrics_tsb_def_params/results (VUS, FastVUS, FastVUS-GPU at L=128, 24,704 pairs)
 and ablation_study/results/ablation_summary_full_20260705_133315.csv.
 Outputs: experiments/figures/error_ecdf_small.pdf and ablation_small.pdf, drawn at print size for the
 0.42 / 0.56 \\linewidth subfigures (one IEEE column = 3.5 in), fonts 7 pt.
@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 
-ARCH = os.path.expanduser("~/Documents/autovus-archive/experiments")
+ARCH = os.path.join("experiments")  # all_metrics_tsb_def_params and ablation_study (moved here from the archive, 2026-11-05)
 OUT = os.path.join("experiments", "figures")
 os.makedirs(OUT, exist_ok=True)
 COL = 3.5                      # IEEE column width in inches
