@@ -9,3 +9,7 @@ The buffer is one of the central concepts of VUS, so we analyze how the runtime 
 ![Runtime versus maximum buffer length](runtime_vs_buffer_length.png)
 
 Average runtime per time series for VUS (red), FastVUS (yellow), and FastVUS-GPU (green) with respect to the buffer length (x-axis in log scale). The black dashed line is the average runtime of AUC. Buffer lengths 0, 2, 4, ..., 512. PDF: [runtime_vs_buffer_length.pdf](runtime_vs_buffer_length.pdf).
+
+## Optional step parameter of FastVUS
+
+FastVUS adds an optional *step* parameter that evaluates every k-th buffer rather than all of them, trading a small, controlled error for speed. More usefully, because FastVUS evaluates the measure per buffer, restricting it to a single buffer length (step equal to L) approximates other event-aware measures such as Range-AUC (Paparrizos et al., VLDB 2022) or SoftED (Salles et al., 2024), so the step parameter also lets the same machinery estimate a family of buffer-based metrics, not only VUS. This is the only approximation in FastVUS and it is off by default (`step=1`).
