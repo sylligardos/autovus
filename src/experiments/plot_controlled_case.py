@@ -208,7 +208,7 @@ def main(L, stem):
     df = score_all(L)
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10, "axes.labelsize": 11,
                          "xtick.labelsize": 9, "ytick.labelsize": 9})
-    fig = plt.figure(figsize=(8.0, 8.5))
+    fig = plt.figure(figsize=(8.0, 7.3))
     gs = GridSpec(1, 2, width_ratios=[0.77, 1.23], wspace=0.045, figure=fig)
     draw_scores(fig.add_subplot(gs[0, 0]), max_buffer_label(L))
     draw_table(fig.add_subplot(gs[0, 1]), df)

@@ -33,7 +33,7 @@ sns.set_style("whitegrid")
 
 
 def finalize_plot(save_dir, filename):
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.92])  # leave room for the figure legend above the axes
     save_path = os.path.join(save_dir, filename)
     plt.savefig(f"{save_path}.pdf", bbox_inches='tight', pad_inches=0)
     plt.savefig(f"{save_path}.png", bbox_inches='tight', pad_inches=0, dpi=250)
@@ -61,7 +61,7 @@ analysis_dfs = [length_analysis_df, n_anomalies_analysis_df, avg_anomaly_length_
 attributes = ["Length", "Number of anomalies", "Anomalies average length"]
 
 # cell 23 (figsize 5 x 3.8 -> 5 x 3.2)
-fig = plt.figure(figsize=(5, 3.2))
+fig = plt.figure(figsize=(5, 2.7))
 gs = GridSpec(2, 2, figure=fig, height_ratios=[3, 2], wspace=0.25, hspace=0.6)
 attr_axis = {"Length": gs[0, :], "Number of anomalies": gs[1, 0], "Anomalies average length": gs[1, 1]}
 abc_numbered = {0: 'a', 1: 'b', 2: 'c'}
@@ -95,5 +95,5 @@ fig.text(0, 0.5, "Runtime (secs; log scale)", va='center', rotation='vertical')
 if legend_axis:
     handles, labels = legend_axis.get_legend_handles_labels()
     legend_axis.get_legend().remove()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=4, frameon=False, fontsize='x-small')
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize='x-small')
 finalize_plot(save_fig_path, 'exec_time_per_ts_char_syn')
