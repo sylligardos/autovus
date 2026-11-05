@@ -63,6 +63,8 @@ def main(out_pdf, out_png=None):
             ax.text(0.01, 0.92, f"AUC-PR = {r['auc_pr']:.3f}\nVUS@{L} = {r['vus_pr']:.3f}\nAutoVUS = {r['autovus']:.3f}",
                     transform=ax.transAxes, fontsize=24, fontweight="bold", va="top", ha="left",
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.93, edgecolor="gray"))
+        if ri == 0:
+            ax.text(0.01, 0.90, "(b)", transform=ax.transAxes, fontsize=26, ha="left", va="top")
         if ri == 2:
             ax.set_xlabel("Time index", fontsize=28)
         else:
