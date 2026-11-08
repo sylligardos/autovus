@@ -45,4 +45,5 @@ class AdjustedVUS:
             'adjusted': float(self.adjust(vus[-1], random[-1])),
             'vus_curve': vus,
             'random_curve': random,
+            'local': getattr(self.engine, 'local', None),   # per-anomaly results (FastVUS per_anomaly=True)
         }

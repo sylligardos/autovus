@@ -132,7 +132,10 @@ class AutoVUS:
             score = np.where(np.abs(score) < self.dust_floor * smax, 0.0, score)
 
         side, zita = self.engine.side, self.engine.zita
+        per_anomaly = getattr(self.engine, 'per_anomaly', False)
         self.engine.zita = 1.0
+        if per_anomaly:
+            self.engine.per_anomaly = False      # local scores only for the final scoring pass
         anomalies = []
         try:
             for k in range(len(start)):
@@ -149,6 +152,8 @@ class AutoVUS:
                 anomalies.append(anomaly)
         finally:
             self.engine.side, self.engine.zita = side, zita
+            if per_anomaly:
+                self.engine.per_anomaly = True
         self.anomalies = anomalies
         return anomalies
 

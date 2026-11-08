@@ -30,7 +30,7 @@ def timed(method):
 
 class FastVUS:
     def __init__(self, L=100, step=1, zita=1 / math.sqrt(2), global_mask=True,
-                 cumulative=False, side='both', max_thresholds=2000):
+                 cumulative=False, side='both', max_thresholds=2000, per_anomaly=False):
         """
         Args:
             L (int): buffer length added on each side of every anomaly.
@@ -42,6 +42,9 @@ class FastVUS:
                 (VUS at L = 0, step, ..., L) instead of a single value.
             side (str): 'both', 'left' or 'right': where buffers are added.
             max_thresholds (int or None): cap on the number of thresholds.
+            per_anomaly (bool): also compute one local VUS-PR per anomaly
+                (see local_scores) into self.local. The returned value is
+                unchanged.
         """
         if L < 0 or step < 0:
             raise ValueError(f"L={L} and step={step} must be non-negative")
@@ -59,6 +62,8 @@ class FastVUS:
         self.cumulative = cumulative
         self.side = side
         self.max_thresholds = max_thresholds
+        self.per_anomaly = per_anomaly
+        self.local = None       # per-anomaly results of the last compute(), see local_scores
 
         self.buffers = np.arange(0, L + 1, step) if L > 0 else np.array([0])
         self.n_buffers = len(self.buffers)
@@ -433,6 +438,177 @@ class FastVUS:
         return self._mean(flat + diagonal)
 
     # ------------------------------------------------------------------
+    # Step 10 (per_anomaly=True only): one local VUS-PR per anomaly
+    # ------------------------------------------------------------------
+    @staticmethod
+    def regions(start, end, T):
+        """Region of every anomaly: halfway to its neighbours, [lo, hi).
+
+        Same windows as AutoVUS.select: lo = (end[k-1] + start[k]) // 2,
+        hi = (end[k] + start[k+1]) // 2; the regions tile the series.
+        """
+        mid = (end[:-1] + start[1:]) // 2
+        lo = np.r_[0, mid].astype(int)
+        hi = np.r_[mid, T].astype(int)
+        return lo, hi
+
+    @timed
+    def own_labels(self, label, start, end, lo, hi, dist_left, dist_right, point_caps):
+        """Buffered label of every point credited to the anomaly of its region only.
+
+        Shape (n_buffers, T). A point before its region's anomaly takes that
+        anomaly's left ramp, a point after it its right ramp, a point inside
+        is 1. Unlike buffered_labels (max of both ramps), a neighbour's ramp
+        reaching past the midpoint is not credited to anyone here.
+        """
+        T = len(label)
+        out = np.zeros((self.n_buffers, T))
+        out[0] = label
+        if self.n_buffers > 1:
+            rid = np.repeat(np.arange(len(start)), hi - lo)
+            before = np.arange(T) < start[rid]
+            after = np.arange(T) > end[rid]
+            if self.side in ('both', 'left'):
+                out[1:, before] = self._ramp(dist_left, point_caps[0])[:, before]
+            if self.side in ('both', 'right'):
+                out[1:, after] = self._ramp(dist_right, point_caps[1])[:, after]
+            out[1:, label.astype(bool)] = 1
+        return out
+
+    @timed
+    def local_existence(self, score, thresholds, start, end, lo, hi, cap_left=None, cap_right=None):
+        """Per anomaly and buffer, the index of the first threshold at which
+        the anomaly is detected, shape (n_anomalies, n_buffers).
+
+        The window of anomaly k at buffer b is [start - reach_left, end +
+        reach_right] clipped to its region [lo, hi): a neighbour's detection
+        never counts. reach = min(b, cap) on a rewarded side, 0 otherwise.
+        The anomaly is detected at threshold i (descending) when the max
+        score in its window reaches thresholds[i]; n_thresholds = never.
+        """
+        K = len(start)
+        n_thr = len(thresholds)
+        thresholds_asc = thresholds[::-1]
+        b = self.buffers
+        caps_l = np.full(K, b[-1]) if cap_left is None else np.asarray(cap_left, dtype=int)
+        caps_r = np.full(K, b[-1]) if cap_right is None else np.asarray(cap_right, dtype=int)
+        out = np.empty((K, self.n_buffers), dtype=np.int64)
+        for k in range(K):
+            s, e = start[k], end[k]
+            best = np.full(self.n_buffers, score[s:e + 1].max())
+            if self.side in ('both', 'left') and s > lo[k]:
+                left = np.maximum.accumulate(score[lo[k]:s][::-1])          # max at distance 1..
+                reach = np.minimum(np.minimum(b, caps_l[k]), len(left))
+                has = reach > 0
+                best[has] = np.maximum(best[has], left[reach[has] - 1])
+            if self.side in ('both', 'right') and e + 1 < hi[k]:
+                right = np.maximum.accumulate(score[e + 1:hi[k]])
+                reach = np.minimum(np.minimum(b, caps_r[k]), len(right))
+                has = reach > 0
+                best[has] = np.maximum(best[has], right[reach[has] - 1])
+            out[k] = n_thr - np.searchsorted(thresholds_asc, best, side='right')
+        return out
+
+    def local_scores(self, label, score, thresholds, start, end, dist_left, dist_right,
+                     point_caps, cap_left, cap_right, buffered, fp, T_full, mask, score_outside,
+                     budget=4_000_000):
+        """Local VUS-PR of every anomaly k (variant C), one value per buffer.
+
+        For anomaly k at buffer b and threshold i:
+          TP_k     own buffered label (own_labels) of the points of its region
+                   at or above the threshold;
+          recall   min(TP_k / pos_k, 1) * E_k, with pos_k = (TP_k + FN_k + a_k) / 2
+                   (the positives of compute(), restricted to k) and E_k the
+                   existence of k in its clipped window (local_existence);
+          precision TP_k / (TP_k + FP / K), FP the false positives of the whole
+                   series (from compute()), K the number of anomalies.
+        area_k(b) is the stepwise area, like auc(). Random baseline per buffer:
+        mass_k / (mass_k + (T - label_mass) / K). False-alarm cost: per point,
+        the part of mean_k (1 - area_k) it causes, averaged over the buffers;
+        sum(cost) = mean over k and b of (1 - area_k(b)).
+
+        TP_k is a histogram of the points' own label at the first threshold
+        that admits them, accumulated over the thresholds; anomalies are done
+        in batches of at most `budget` (anomaly, buffer, threshold) cells.
+
+        Returns a dict: start, end (original coordinates, inclusive), area and
+        random (n_anomalies, n_buffers), vus and adjusted (running means over
+        the buffers if cumulative, else means), cost (length T_full).
+        """
+        T = len(label)
+        K = len(start)
+        n_b, n_thr = self.n_buffers, len(thresholds)
+        lo, hi = self.regions(start, end, T)
+        own = self.own_labels(label, start, end, lo, hi, dist_left, dist_right, point_caps)
+        j = self.local_existence(score, thresholds, start, end, lo, hi, cap_left, cap_right)
+        idx = np.searchsorted(-thresholds, -score, side='left')    # first threshold admitting each point
+        rid = np.repeat(np.arange(K), hi - lo)
+        inside = label.astype(bool)
+        in_buf = np.where((own[-1] > 0) & ~inside)[0]              # points with an own buffer value
+        in_pts = np.where(inside)[0]
+        a = (end - start + 1).astype(float)
+        mass = np.add.reduceat(own, lo, axis=1).T                   # (K, n_b)
+        label_mass = buffered.sum(axis=1)
+        random = mass / (mass + (T_full - label_mass)[None, :] / K)
+        fp_k = fp / K                                                # (n_b, n_thr)
+
+        area = np.zeros((K, n_b))
+        G = np.zeros((n_b, n_thr))          # sum over k of dR_k / (TP_k + FP / K), for the cost
+        step = max(1, budget // (n_b * (n_thr + 1)))
+        thr = np.arange(n_thr)
+        for k0 in range(0, K, step):
+            k1 = min(k0 + step, K)
+            B = k1 - k0
+            p = in_pts[(in_pts >= lo[k0]) & (in_pts < hi[k1 - 1])]
+            hit = np.bincount((rid[p] - k0) * (n_thr + 1) + idx[p], minlength=B * (n_thr + 1))
+            hit = np.cumsum(hit.reshape(B, n_thr + 1)[:, :n_thr], axis=1)        # anomaly points admitted
+            q = in_buf[(in_buf >= lo[k0]) & (in_buf < hi[k1 - 1])]
+            flat = (((rid[q] - k0)[None, :] * n_b + np.arange(n_b)[:, None]) * (n_thr + 1) + idx[q][None, :]).ravel()
+            tp = np.bincount(flat, weights=own[:, q].ravel(), minlength=B * n_b * (n_thr + 1)).astype(float)   # empty input gives int
+            tp = np.cumsum(tp.reshape(B, n_b, n_thr + 1)[:, :, :n_thr], axis=2) + hit[:, None, :]
+            fn = a[k0:k1, None] - hit
+            pos = (tp + fn[:, None, :] + a[k0:k1, None, None]) / 2
+            exists = thr[None, None, :] >= j[k0:k1, :, None]
+            recall = np.minimum(tp / pos, 1.0) * exists
+            denom = tp + fp_k[None]
+            precision = np.divide(tp, denom, out=np.zeros_like(tp), where=denom > 0)
+            d_recall = np.diff(recall, axis=2, prepend=0.0)
+            area[k0:k1] = np.sum(d_recall * precision, axis=2)
+            G += np.sum(np.divide(d_recall, denom, out=np.zeros_like(tp), where=denom > 0), axis=0)
+
+        # false-alarm cost per point: sum over b and admitting thresholds of G * fp weight / (K * n_b)
+        Gc = np.cumsum(G[:, ::-1], axis=1)[:, ::-1] / (K * K * n_b)   # thresholds i and lower
+        Gc = np.hstack((Gc, np.zeros((n_b, 1))))                      # never admitted
+        g1 = Gc.sum(axis=0)
+        cost = g1[idx]
+        support = np.where(buffered[-1] > 0)[0]                      # widest buffer covers every narrower one
+        for c0 in range(0, len(support), 100_000):
+            c = support[c0:c0 + 100_000]
+            cost[c] -= np.einsum('bt,bt->t', Gc[:, idx[c]], buffered[:, c])
+        cost_full = np.zeros(T_full)
+        if mask is not None:
+            cost_full[mask] = cost
+            idx_out = np.searchsorted(-thresholds, -score_outside, side='left')
+            cost_full[~mask] = g1[idx_out]
+            where = np.where(mask)[0]
+            start_o, end_o = where[start], where[end]
+        else:
+            cost_full[:] = cost
+            start_o, end_o = start, end
+
+        if self.cumulative:
+            n = np.arange(1, n_b + 1)
+            vus, rnd = np.cumsum(area, axis=1) / n, np.cumsum(random, axis=1) / n
+        else:
+            vus, rnd = area.mean(axis=1), random.mean(axis=1)
+        return {
+            'start': start_o, 'end': end_o,
+            'area': area, 'random': random,
+            'vus': vus, 'adjusted': (vus - rnd) / np.maximum(1.0 - rnd, 1e-10),
+            'cost': cost_full,
+        }
+
+    # ------------------------------------------------------------------
     # The metric
     # ------------------------------------------------------------------
     def compute(self, label, score, cap_left=None, cap_right=None, metric='pr'):
@@ -488,6 +664,12 @@ class FastVUS:
         tp, fp, positives = self.confusion_matrix(buffered, score_mask)
         if self.global_mask:
             fp = fp + self.false_positives_outside(score_outside, thresholds)
+
+        self.local = None
+        if self.per_anomaly and metric != 'roc':
+            self.local = self.local_scores(label, score, thresholds, start, end, dist_left, dist_right,
+                                           point_caps, cap_left, cap_right, buffered, fp, T,
+                                           mask if self.global_mask else None, score_outside)
 
         precision, recall = self.precision_recall(tp, fp, positives, existence)
         if metric == 'pr':
