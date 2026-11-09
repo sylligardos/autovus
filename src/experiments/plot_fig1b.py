@@ -98,7 +98,7 @@ def main(out_pdf, out_png=None):
                 ax.plot([0.0, lay["ax_left"] / W], [yb, yb], transform=tr, clip_on=False, linestyle="--",
                         color=lay["edge_color"], linewidth=lay["edge_width"])
         if ri == 0:
-            ax.set_title("L2: VUS applies the same buffer", fontsize=TITLE_FS,
+            ax.set_title("L2: VUS applies the same buffer to every anomaly", fontsize=TITLE_FS,
                          fontweight="bold")
             ax.text(0.01, 0.94, "(b)", transform=ax.transAxes, fontsize="medium", fontweight="bold", ha="left", va="top")
         if ri == 2:
