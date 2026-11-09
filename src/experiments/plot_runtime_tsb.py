@@ -110,7 +110,7 @@ for idx in range(len(xticklabels)):
 axis.set_xticks(axis.get_xticks())
 axis.set_xticklabels([label.get_text() for label in xticklabels])
 
-axis.set_title('L1: VUS is computationally expensive', fontweight='bold', fontsize=7.2)
+axis.set_title('L1: VUS is computationally expensive', fontweight='bold', fontsize=10)
 axis.text(0.985, 0.03, '(a)', transform=axis.transAxes, ha='right', va='bottom', fontsize='medium', fontweight='bold')
 
 finalize_plot(save_fig_path, 'exec_time_comparison_tsb_arrows')

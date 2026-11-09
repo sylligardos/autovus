@@ -41,11 +41,11 @@ def main(out_pdf, out_png=None):
     from matplotlib.transforms import Bbox, blended_transform_factory
     lay = json.load(open(os.path.join(ROOT, "experiments", "figures", "fig1a_layout.json")))
     W, FS = lay["width"], lay["font_size"]
-    TITLE_FS, BOX_FS, NAME_FS = 7.2, 8, 9
+    TITLE_FS, BOX_FS, NAME_FS = 10, 8, 9
     rows_in = [0.55, 0.85, 0.85]; top_in, bot_in, gap_in = 0.25, 0.4, 0.05
     H = top_in + sum(rows_in) + 2 * gap_in + bot_in
     p = TSADParser()
-    plt.rcParams.update({"font.size": FS})
+    plt.rcParams.update({"font.size": FS, "text.color": "0.15", "axes.labelcolor": "0.15", "xtick.color": "0.15"})  # seaborn text colour of Fig 1(a)
     fig = plt.figure(figsize=(W, H))
     gs = fig.add_gridspec(3, 1, height_ratios=rows_in, hspace=gap_in / np.mean(rows_in),
                           left=lay["ax_left"] / W, right=1 - lay["ax_right"] / W, top=1 - top_in / H, bottom=bot_in / H)
@@ -98,7 +98,7 @@ def main(out_pdf, out_png=None):
                 ax.plot([0.0, lay["ax_left"] / W], [yb, yb], transform=tr, clip_on=False, linestyle="--",
                         color=lay["edge_color"], linewidth=lay["edge_width"])
         if ri == 0:
-            ax.set_title("L2: VUS applies the same buffer lengths to every anomaly and detector", fontsize=TITLE_FS,
+            ax.set_title("L2: VUS applies the same buffer", fontsize=TITLE_FS,
                          fontweight="bold")
             ax.text(0.01, 0.94, "(b)", transform=ax.transAxes, fontsize="medium", fontweight="bold", ha="left", va="top")
         if ri == 2:
