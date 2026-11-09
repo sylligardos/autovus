@@ -54,6 +54,21 @@ def main(out_pdf, out_png=None):
                 span(ax, s - bl, e + br, ORANGE, 0.25, minw)
             span(ax, s, e, PINK, 0.5, minw)
         ax.plot(x, y, linewidth=1.6, color="#1f5fbf")
+        if name == "SAND":
+            # FP after the first anomaly: highest score between the first and second fixed buffers,
+            # above the score SAND gives inside the last anomaly (dashed line from that detection).
+            a0, a1, aL = own[0], own[1], own[-1]
+            lo_fp, hi_fp = int(a0[4] + L + 1), int(a1[3] - L)
+            fp = lo_fp + int(np.argmax(y[lo_fp:hi_fp]))
+            level = float(np.max(y[int(aL[3]):int(aL[4]) + 1]))
+            ax.hlines(level, fp, int(aL[3]), color="black", linestyle=(0, (1.5, 1.5)), linewidth=3.3)
+            r0, r1 = fp, fp  # contiguous run around the FP that lies above the last detection
+            while r0 > lo_fp and y[r0 - 1] > level: r0 -= 1
+            while r1 < hi_fp - 1 and y[r1 + 1] > level: r1 += 1
+            ax.plot(x[r0:r1 + 1], y[r0:r1 + 1], color=PINK, linewidth=8, solid_capstyle="round", zorder=3)
+            print(f"FP run above the last detection: {r0}..{r1}")
+            ax.text(r1 + 8, y[fp] + 0.12, "FP", fontsize=24, fontweight="bold", color=PINK, ha="left", va="center")
+            print(f"FP at {fp}: score {y[fp]:.3f} > last-anomaly peak {level:.3f}")
         ax.set_xlim(lo, hi - 1); ax.set_yticks([]); ax.margins(x=0)
         ax.text(0.985, 0.90, name, transform=ax.transAxes, fontsize=26, fontweight="bold", ha="right", va="top",
                 bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.7, edgecolor="none"))
