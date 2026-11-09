@@ -41,10 +41,22 @@ def span(ax, a, b, color, alpha, minw):
 
 
 def main(out_pdf, out_png=None):
+    """Drawn in the style and at the scale of Fig 1(b) (src/experiments/plot_fig1b.py): same width, font sizes,
+    frame edges and colours (experiments/figures/fig1a_layout.json), scores in the left margin."""
+    import json
+    from matplotlib.transforms import Bbox, blended_transform_factory
+    lay = json.load(open(os.path.join(ROOT, "experiments", "figures", "fig1a_layout.json")))
+    FS = lay["font_size"]
+    W = lay["width"]                    # one column, same print scale as Fig 1
+    LEFT = 0.54                         # smallest left margin (in) that fits "AutoVUS" (0.49 in) + gap
+    BOX_FS, NAME_FS = 8, 9
+    rows_in = [0.3, 0.45, 0.45, 0.1, 0.3, 0.45, 0.45]; gap_in = 0.04
+    H = sum(rows_in) + (len(rows_in) - 1) * gap_in + 0.05
     p = TSADParser()
-    plt.rcParams.update({"font.size": 26})
-    fig = plt.figure(figsize=(24, 10.0))
-    gs = fig.add_gridspec(7, 1, height_ratios=[1.0, 0.75, 0.75, 0.18, 1.0, 0.75, 0.75], hspace=0.08)
+    plt.rcParams.update({"font.size": FS, "text.color": "0.15", "axes.labelcolor": "0.15", "xtick.color": "0.15"})
+    fig = plt.figure(figsize=(W, H))
+    gs = fig.add_gridspec(len(rows_in), 1, height_ratios=rows_in, hspace=gap_in / np.mean(rows_in),
+                          left=LEFT / W, right=1 - lay["ax_right"] / W, top=1 - 0.025 / H, bottom=0.025 / H)
     rows = [0, 1, 2, 4, 5, 6]
     for ci, (name_ts, file, dets) in enumerate(CASES):
         values, label = load_series(p, file)
@@ -58,19 +70,28 @@ def main(out_pdf, out_png=None):
                 if r is not None and (bl > 0 or br > 0):
                     span(ax, s - bl, e + br, ORANGE, 0.25, minw)
                 span(ax, s, e, PINK, 0.5, minw)
-            ax.plot(x, y, linewidth=1.6, color="#1f5fbf")
+            ax.plot(x, y, linewidth=0.8, color="#1f5fbf", zorder=3)
+            for sp in ax.spines.values():  # same frame as Fig 1
+                sp.set_edgecolor(lay["edge_color"]); sp.set_linewidth(lay["edge_width"])
             ax.set_xlim(lo, hi - 1); ax.set_yticks([]); ax.margins(x=0)
-            ax.text(0.985, 0.90, name, transform=ax.transAxes, fontsize=26, fontweight="bold", ha="right", va="top",
-                    bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.7, edgecolor="none"))
+            ax.text(0.99, 0.94, name, transform=ax.transAxes, fontsize=NAME_FS, ha="right", va="top",
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.7, edgecolor="none"))
             if r is not None:
                 print(f"{name_ts} {name}: VUS@{L} {r['vus_pr']:.3f} AutoVUS {r['autovus']:.3f} b* {[int(a[5]) for a in own]} {[a[7] for a in own]}")
-                ax.text(0.01, 0.92, f"VUS@{L} = {r['vus_pr']:.3f}\nAutoVUS = {r['autovus']:.3f}",
-                        transform=ax.transAxes, fontsize=24, fontweight="bold", va="top", ha="left",
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.93, edgecolor="gray"))
+                tr = blended_transform_factory(fig.transFigure, ax.transAxes)
+                for k, (m, v) in enumerate([(f"VUS@{L}", r["vus_pr"]), ("AutoVUS", r["autovus"])]):
+                    yk = 0.97 - 0.5 * k
+                    ax.text(0.0, yk, m, transform=tr, fontsize=BOX_FS, color="0.45", ha="left", va="top")
+                    ax.text(0.0, yk - 0.23, f"{v:.3f}", transform=tr, fontsize=NAME_FS, color="black", ha="left", va="top")
+                for yb in (0.0, 1.0):  # dashed separators in the frame colour, as in Fig 1(b)
+                    ax.plot([0.0, LEFT / W], [yb, yb], transform=tr, clip_on=False, linestyle="--",
+                            color=lay["edge_color"], linewidth=lay["edge_width"])
             ax.set_xticks([])   # no x ticks or label (space; the axis is time)
-    fig.savefig(out_pdf, bbox_inches="tight", pad_inches=0)
+    tb = fig.get_tightbbox(fig.canvas.get_renderer())
+    box = Bbox([[0, tb.y0], [W, tb.y1]])  # full width, as Fig 1, so both print at the same scale
+    fig.savefig(out_pdf, bbox_inches=box)
     if out_png:
-        fig.savefig(out_png, bbox_inches="tight", pad_inches=0, dpi=60)
+        fig.savefig(out_png, bbox_inches=box, dpi=250)
 
 
 if __name__ == "__main__":
