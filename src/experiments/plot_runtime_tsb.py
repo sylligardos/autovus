@@ -110,7 +110,22 @@ for idx in range(len(xticklabels)):
 axis.set_xticks(axis.get_xticks())
 axis.set_xticklabels([label.get_text() for label in xticklabels])
 
-axis.set_title('L1: VUS is computationally expensive', fontweight='bold', fontsize='medium')
+axis.set_title('L1: VUS is computationally expensive', fontweight='bold', fontsize=7.2)
 axis.text(0.985, 0.03, '(a)', transform=axis.transAxes, ha='right', va='bottom', fontsize='medium', fontweight='bold')
 
 finalize_plot(save_fig_path, 'exec_time_comparison_tsb_arrows')
+
+# --- layout of the saved (tight-cropped) panel, so Fig 1(b) can align its frame to it -----
+import json
+_fig = plt.gcf(); _r = _fig.canvas.get_renderer()
+_tb = _fig.get_tightbbox(_r)                                  # inches
+_ab = axis.get_window_extent(_r).transformed(_fig.dpi_scale_trans.inverted())
+_tt = axis.title.get_window_extent(_r).transformed(_fig.dpi_scale_trans.inverted())
+layout = dict(width=_tb.width, ax_left=_ab.x0 - _tb.x0, ax_right=_tb.x1 - _ab.x1,
+              title_gap=_tt.y0 - _ab.y1, font_size=plt.rcParams['font.size'],
+              edge_color=list(axis.spines['left'].get_edgecolor()), edge_width=axis.spines['left'].get_linewidth())
+json.dump(layout, open(os.path.join(save_fig_path, 'fig1a_layout.json'), 'w'), indent=1)
+print('layout (inches):', layout)
+# re-save with the exact box measured above, so the width matches the layout Fig 1(b) is drawn to
+_stem = os.path.join(save_fig_path, 'exec_time_comparison_tsb_arrows')
+_fig.savefig(f"{_stem}.pdf", bbox_inches=_tb); _fig.savefig(f"{_stem}.png", bbox_inches=_tb, dpi=250)
