@@ -60,8 +60,8 @@ n_anomalies_analysis_df.loc[:, 'Number of anomalies'] = n_anomalies_analysis_df.
 analysis_dfs = [length_analysis_df, n_anomalies_analysis_df, avg_anomaly_length_analysis_df]
 attributes = ["Length", "Number of anomalies", "Anomalies average length"]
 
-# cell 23 (figsize 5 x 3.8 -> 5 x 3.2)
-fig = plt.figure(figsize=(5, 2.7))
+# cell 23 (figsize 5 x 3.8 -> 5 x 3.2; was 2.7, back to 3.2 on 2026-11-10 since the AI ack is outside the 12 pages)
+fig = plt.figure(figsize=(5, 3.2))
 gs = GridSpec(2, 2, figure=fig, height_ratios=[3, 2], wspace=0.25, hspace=0.6)
 attr_axis = {"Length": gs[0, :], "Number of anomalies": gs[1, 0], "Anomalies average length": gs[1, 1]}
 abc_numbered = {0: 'a', 1: 'b', 2: 'c'}
