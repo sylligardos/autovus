@@ -192,3 +192,4 @@ references/autovus-paper
 
 # demo export, too big for GitHub (124 MB); regenerate with app/export.py
 app/data/*/anomalies.csv
+app/data/*/local/series/

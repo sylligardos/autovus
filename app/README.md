@@ -10,7 +10,7 @@ cd app/web && npm install && npm run dev        # http://localhost:3000 (PORT=31
 
 `AUTOVUS_API` changes where the web app looks for the Python side (default `http://127.0.0.1:8765`).
 
-Pages: Intro (`/`), Rankings, Cases, Series, Speed. Shared state lives in the URL (`?b=tsb-ad`). Every page has a "?" popup (`web/lib/help.ts`).
+Pages: Intro (`/`), Rankings, Cases, Series, Local, Finder, Coverage, Buffers, Suspicious, Play, Speed. Shared state lives in the URL (`?b=tsb-ad`). Every page has a "?" popup (`web/lib/help.ts`).
 
 ## The tables
 
@@ -23,3 +23,14 @@ taskset -c 0-3 nice -n 19 conda run -n autovus python app/export.py --phase 2 --
 ```
 
 Stop it with `pkill -f "export[.]py"`.
+
+## The local-evaluation tables
+
+Local, Finder, Coverage, Buffers and Suspicious read `app/data/<benchmark>/local/`, written from the finished benchmark exports in `experiments/` (local scores, global adjusted VUS, per-side buffers). A few minutes, nothing recomputed:
+
+```bash
+nice -n 19 conda run -n autovus python app/export_local.py            # all tables
+nice -n 19 conda run -n autovus python app/export_local.py --only odd  # one part: local, buffers, odd, game
+```
+
+`local/series/` (one file per series, ~30 MB) is not in git. The game's rounds are `local/game.json` (series, detector, anomaly index); edit it by hand, the Python side scores each round live (AutoVUS per side, L = 20).

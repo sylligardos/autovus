@@ -18,7 +18,7 @@ import uuid
 from functools import lru_cache
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -459,3 +459,74 @@ def notes_put(body: Notes):
     with open(os.path.join(DATA, 'notes.json'), 'w') as f:
         json.dump(body.notes, f, indent=1)
     return {'ok': True}
+
+
+# ---------------------------------------------------------------- endpoints: local evaluation
+# The Local, Finder, Coverage, Buffers and Suspicious pages read the tables
+# app/export_local.py writes to app/data/<benchmark>/local/; the game scores
+# its rounds live.
+LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game')
+
+
+@lru_cache(maxsize=32)
+def _local_bytes(path, mtime):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def local_file(benchmark, *parts):
+    parser(benchmark)                                  # 404 on an unknown benchmark
+    path = os.path.join(DATA, benchmark, 'local', *parts)
+    if not os.path.exists(path):
+        raise HTTPException(404, 'not exported; run app/export_local.py')
+    return Response(content=_local_bytes(path, os.path.getmtime(path)), media_type='application/json')
+
+
+@app.get('/local/table/{name}')
+def local_table(name: str, b: str = Query('tsb-ad')):
+    if name not in LOCAL_TABLES:
+        raise HTTPException(404, f'unknown table {name}')
+    return local_file(b, name + '.json')
+
+
+@app.get('/local/series/{file}')
+def local_series(file: str, b: str = Query('tsb-ad')):
+    if '/' in file or file.startswith('.'):
+        raise HTTPException(400, 'bad file name')
+    return local_file(b, 'series', file + '.json')
+
+
+@lru_cache(maxsize=64)
+def game_round(benchmark, file, detector, k, L):
+    """One round: the window around anomaly k, and the per-side buffers AutoVUS picks there."""
+    label, score, values = load_pair(benchmark, file, detector)
+    auto = AutoVUS(FastVUS(L=L, cumulative=True), sides='per_side')
+    t0 = time.perf_counter()
+    auto.compute(label, score)
+    seconds = time.perf_counter() - t0
+    if not 0 <= k < len(auto.anomalies):
+        raise HTTPException(404, 'no such anomaly')
+    a = auto.anomalies[k]
+    st, en = int(a['start']), int(a['end'])
+    lo, hi = max(0, st - 2 * L), min(len(label), en + 2 * L + 1)
+    v = scaled(values[lo:hi]) if values is not None else np.zeros(hi - lo)
+    s = scaled(score)[lo:hi]
+    return {'file': file, 'detector': detector, 'k': k, 'L': L, 'lo': lo, 'hi': hi, 'start': st, 'end': en,
+            'b_left': int(a['left']['buffer_val']), 'b_right': int(a['right']['buffer_val']), 'type': a['detection'],
+            'seconds': seconds, 'values': [round(float(x), 4) for x in v], 'score': [round(float(x), 4) for x in s]}
+
+
+@app.get('/game/rounds')
+def game_rounds(b: str = Query('tsb-ad')):
+    path = os.path.join(DATA, b, 'local', 'game.json')
+    if not os.path.exists(path):
+        raise HTTPException(404, 'no game.json; run app/export_local.py')
+    with open(path) as f:
+        g = json.load(f)
+    out = []
+    for r in g['rounds']:
+        try:
+            out.append(game_round(b, r['file'], r['detector'], int(r['k']), int(g.get('L', 20))))
+        except HTTPException:
+            continue
+    return {'L': g.get('L', 20), 'rounds': out}
