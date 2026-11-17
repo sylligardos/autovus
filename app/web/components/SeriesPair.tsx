@@ -43,7 +43,7 @@ export function SeriesPair({ state, file, a, b, move, am, bm, rows }: { state: S
       })}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span className="muted" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}><span className="swatch" style={{ width: 10, height: 8, background: "var(--label)" }} />labelled anomaly</span>
-        <Link href={href("/series", state, { s: file, pin: Array.from(new Set([a, b])).join(","), top: "0" })} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Open in Series with both pinned</Link>
+        <Link href={href("/local", state, { s: file, det: Array.from(new Set([a, b])).join(",") })} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Open in Review with both pinned</Link>
       </div>
     </section>
   );

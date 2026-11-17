@@ -1,16 +1,21 @@
 "use client";
 // The game: for each round, drag the buffer edges before and after the label
 // to what the detection deserves, lock in, and see the buffers AutoVUS picks
-// (per side, L = 20). The rounds live in app/data/<benchmark>/local/game.json.
+// (per side, L = 20). Every game is a new draw of ROUNDS rounds from
+// app/data/<benchmark>/local/game.json. A round opens in Review.
 
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { loadGame } from "@/lib/api";
-import { type DetectionType, type State } from "@/lib/model";
-import { seriesName, type GameDoc } from "@/lib/local";
+import { href, type DetectionType, type State } from "@/lib/model";
+import { seriesName, type GameDoc, type GameRound } from "@/lib/local";
+
+const ROUNDS = 6;
 
 const NAMES: Record<DetectionType, string> = { early: "Before the label", exact: "On the label", late: "After the label", wide: "Both sides", missed: "Missed" };
 const BEFORE = "var(--early)", AFTER = "var(--down)";
 type Phase = "drag" | "reveal" | "end";
+const typeOf = (bl: number, br: number): DetectionType => (bl > 0 && br > 0 ? "wide" : bl > 0 ? "early" : br > 0 ? "late" : "exact");
 
 export function GameView({ state }: { state: State }) {
   const [g, setG] = useState<GameDoc | null>(null);
@@ -19,33 +24,30 @@ export function GameView({ state }: { state: State }) {
   const [phase, setPhase] = useState<Phase>("drag");
   const [bl, setBl] = useState(0);
   const [br, setBr] = useState(0);
-  const [pts, setPts] = useState<number[]>([]);
+  const [picks, setPicks] = useState<[number, number][]>([]);
   const [t0, setT0] = useState(0);
   const [t1, setT1] = useState(0);
   const plot = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<"l" | "r" | null>(null);
 
-  useEffect(() => {
-    let live = true;
-    loadGame<GameDoc>(state.benchmark).then((d) => { if (live) { if (d && d.rounds.length) { setG(d); setT0(Date.now()); } else setError(true); } });
-    return () => { live = false; };
+  // A new draw: on arrival and on Play again.
+  const draw = useCallback(() => {
+    setG(null); setI(0); setPhase("drag"); setBl(0); setBr(0); setPicks([]); setT1(0);
+    loadGame<GameDoc>(state.benchmark, ROUNDS).then((d) => { if (d && d.rounds.length) { setG(d); setT0(Date.now()); } else setError(true); });
   }, [state.benchmark]);
+  useEffect(() => { draw(); }, [draw]);
+  // The round in Review: the detector pinned, zoomed on the window, the anomaly's buffer explained.
+  const review = (x: GameRound) => href("/local", state, { s: x.file, det: x.detector, v: `${x.lo},${x.hi}`, a: String(x.k) });
 
   if (error) return <main className="content"><div className="panel"><span className="muted">No game rounds. Run <code>conda run -n autovus python app/export_local.py</code> and start the Python side.</span></div></main>;
   if (!g) return <main className="content" style={{ maxWidth: 980, margin: "0 auto" }}><div className="panel" style={{ height: 420 }} /></main>;
 
   const n = g.rounds.length;
-  const total = pts.reduce((a, b) => a + b, 0);
   const L = g.L;
-  const restart = () => { setI(0); setPhase("drag"); setBl(0); setBr(0); setPts([]); setT0(Date.now()); setT1(0); };
   const header = (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
       <div style={{ display: "flex", gap: 8 }} aria-label={`Round ${Math.min(i + 1, n)} of ${n}`}>
         {g.rounds.map((_, k) => <span key={k} style={{ width: 28, height: 6, borderRadius: 3, background: k < i || phase === "end" ? "var(--ink)" : k === i ? "var(--accent)" : "var(--border)" }} />)}
-      </div>
-      <div className="mono" style={{ display: "flex", alignItems: "baseline", gap: 18 }}>
-        <span className="muted" style={{ fontSize: 13 }}>You <span style={{ fontSize: 20, color: "var(--ink)" }}>{total.toFixed(1)}</span></span>
-        <span className="muted" style={{ fontSize: 13 }}>AutoVUS <span style={{ fontSize: 20, color: "var(--accent)" }}>{(phase === "end" ? n : pts.length).toFixed(1)}</span></span>
       </div>
     </div>
   );
@@ -55,20 +57,33 @@ export function GameView({ state }: { state: State }) {
     return (
       <main className="content" style={{ maxWidth: 980, margin: "0 auto" }}>
         {header}
-        <section className="panel" aria-label="Result" style={{ alignItems: "center", padding: "40px 24px", gap: 22, textAlign: "center" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 220px))", gap: 24 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span className="muted" style={{ fontSize: 13, fontWeight: 600 }}>You</span>
-              <span className="mono" style={{ fontSize: 44 }}>{total.toFixed(1)}</span>
-              <span className="mono muted" style={{ fontSize: 13 }}>{Math.round((t1 - t0) / 1000)} s</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>AutoVUS</span>
-              <span className="mono" style={{ fontSize: 44, color: "var(--accent)" }}>{n.toFixed(1)}</span>
-              <span className="mono muted" style={{ fontSize: 13 }}>{ms.toFixed(1)} ms</span>
-            </div>
-          </div>
-          <button type="button" className="btn btn-primary" onClick={restart} style={{ height: 44, padding: "0 22px", fontSize: 14 }}>Play again</button>
+        <section className="panel" aria-label="Result" style={{ alignItems: "center", padding: "32px 24px", gap: 22 }}>
+          <table className="table" style={{ maxWidth: 720 }}>
+            <thead>
+              <tr><th>Detector</th><th>You</th><th style={{ color: BEFORE }}>Before</th><th style={{ color: AFTER }}>After</th><th style={{ color: "var(--accent)" }}>AutoVUS</th><th style={{ color: BEFORE }}>Before</th><th style={{ color: AFTER }}>After</th><th /></tr>
+            </thead>
+            <tbody>
+              {g.rounds.map((x, k) => {
+                const [pl, pr] = picks[k] ?? [0, 0];
+                const yt = typeOf(pl, pr);
+                return (
+                  <tr key={k} style={{ cursor: "default" }}>
+                    <td className="sans" style={{ fontWeight: 600 }}>{x.detector}</td>
+                    <td className="sans" style={{ color: yt === x.type ? "var(--exact)" : "var(--late)", fontWeight: 600 }}>{NAMES[yt]}</td>
+                    <td className="mono">{pl}</td><td className="mono">{pr}</td>
+                    <td className="sans" style={{ fontWeight: 600 }}>{NAMES[x.type]}</td>
+                    <td className="mono">{x.b_left}</td><td className="mono">{x.b_right}</td>
+                    <td className="r"><Link href={review(x)} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Review</Link></td>
+                  </tr>
+                );
+              })}
+              <tr style={{ cursor: "default" }}>
+                <td className="sans muted">Time</td><td className="mono" colSpan={3}>{Math.round((t1 - t0) / 1000)} s</td>
+                <td className="mono" colSpan={4} style={{ color: "var(--accent)" }}>{ms.toFixed(1)} ms</td>
+              </tr>
+            </tbody>
+          </table>
+          <button type="button" className="btn btn-primary" onClick={draw} style={{ height: 44, padding: "0 22px", fontSize: 14 }}>Play again</button>
         </section>
       </main>
     );
@@ -84,9 +99,8 @@ export function GameView({ state }: { state: State }) {
     return dashed ? <div style={{ ...style, boxSizing: "border-box", border: `2px dashed ${color}`, borderRadius: 3 }} /> : <div style={{ ...style, background: color, opacity: 0.22 }} />;
   };
   const line = (a: number[]) => a.map((v, k) => `${(((k + 0.5) / a.length) * 1000).toFixed(1)},${(96 - v * 92).toFixed(1)}`).join(" ");
-  const yourType: DetectionType = bl > 0 && br > 0 ? "wide" : bl > 0 ? "early" : br > 0 ? "late" : "exact";
+  const yourType = typeOf(bl, br);
   const sameType = yourType === r.type || (r.type === "missed" && yourType === "exact");
-  const roundPts = Math.round(Math.max(0, 1 - (Math.abs(bl - r.b_left) + Math.abs(br - r.b_right)) / 20) * 10) / 10;
   const last = i === n - 1;
 
   const setFrom = (side: "l" | "r", clientX: number) => {
@@ -140,19 +154,20 @@ export function GameView({ state }: { state: State }) {
         {phase === "drag" ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <span className="mono" style={{ fontSize: 14 }}><span style={{ color: BEFORE }}>{bl}</span> · <span style={{ color: AFTER }}>{br}</span></span>
-            <button type="button" className="btn btn-primary" onClick={() => { setPts((p) => [...p, roundPts]); setPhase("reveal"); }} style={{ height: 44, padding: "0 22px", fontSize: 14 }}>Lock in</button>
+            <button type="button" className="btn btn-primary" onClick={() => { setPicks((p) => [...p, [bl, br]]); setPhase("reveal"); }} style={{ height: 44, padding: "0 22px", fontSize: 14 }}>Lock in</button>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <table className="table">
-              <thead><tr><th /><th>Detection</th><th style={{ color: BEFORE }}>Before</th><th style={{ color: AFTER }}>After</th><th className="r">Points</th></tr></thead>
+              <thead><tr><th /><th>Detection</th><th style={{ color: BEFORE }}>Before</th><th style={{ color: AFTER }}>After</th></tr></thead>
               <tbody>
-                <tr style={{ cursor: "default" }}><td className="sans" style={{ fontWeight: 600 }}>You</td><td className="sans" style={{ color: sameType ? "var(--exact)" : "var(--late)", fontWeight: 600 }}>{NAMES[yourType]}</td><td className="mono">{bl}</td><td className="mono">{br}</td><td className="r mono">{(pts[i] ?? 0).toFixed(1)}</td></tr>
-                <tr style={{ cursor: "default" }}><td className="sans" style={{ fontWeight: 600, color: "var(--accent)" }}>AutoVUS</td><td className="sans" style={{ fontWeight: 600 }}>{NAMES[r.type]}</td><td className="mono">{r.b_left}</td><td className="mono">{r.b_right}</td><td className="r mono" style={{ color: "var(--accent)" }}>1.0</td></tr>
+                <tr style={{ cursor: "default" }}><td className="sans" style={{ fontWeight: 600 }}>You</td><td className="sans" style={{ color: sameType ? "var(--exact)" : "var(--late)", fontWeight: 600 }}>{NAMES[yourType]}</td><td className="mono">{bl}</td><td className="mono">{br}</td></tr>
+                <tr style={{ cursor: "default" }}><td className="sans" style={{ fontWeight: 600, color: "var(--accent)" }}>AutoVUS</td><td className="sans" style={{ fontWeight: 600 }}>{NAMES[r.type]}</td><td className="mono">{r.b_left}</td><td className="mono">{r.b_right}</td></tr>
               </tbody>
             </table>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span className="mono muted" style={{ fontSize: 13 }}>AutoVUS {(r.seconds * 1000).toFixed(1)} ms</span>
+              <Link href={review(r)} className="btn" style={{ marginLeft: "auto", height: 44, padding: "0 18px", fontSize: 14, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Why this buffer</Link>
               <button type="button" className="btn" onClick={() => { if (last) { setPhase("end"); setT1(Date.now()); } else { setI(i + 1); setPhase("drag"); setBl(0); setBr(0); } }}
                 style={{ height: 44, padding: "0 22px", fontSize: 14, fontWeight: 600, background: "var(--ink)", color: "var(--panel)", borderColor: "var(--ink)" }}>{last ? "See result" : "Next round"}</button>
             </div>

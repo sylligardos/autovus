@@ -12,6 +12,7 @@ Run from the repo root:
 import io
 import json
 import os
+import random
 import sys
 import time
 import uuid
@@ -46,6 +47,9 @@ _parsers = {}
 UPLOADS = {}                     # id -> {'label', 'score', 'name', 'n'}
 ORACLE_DELAY = 64                # the delayed oracle reference: label shifted later by this many points
 REFERENCES = ('Delayed oracle', 'Random')
+SIDES = 'per_side'               # AutoVUS of the live pages: 'per_side' or 'symmetric' (the paper's)
+# The curves of one anomaly: (key on the page, key in the AutoVUS result).
+SIDE_KEYS = (('before', 'left'), ('after', 'right')) if SIDES == 'per_side' else (('both', 'left'),)
 MAX_LIVE_T = 200_000             # upstream VUS and PATE run live only below this length
 
 
@@ -189,12 +193,12 @@ def score_doc(file: str, detector: str, b: str = Query('tsb-ad'), bins: int = Qu
 # ---------------------------------------------------------------- endpoints: selection
 @lru_cache(maxsize=256)
 def selection(benchmark, file, detector, L):
-    """AutoVUS (paper rule, symmetric) on the CPU, plus plain VUS-PR and Adjusted VUS under 'full'."""
+    """AutoVUS (paper rule, sides = SIDES) on the CPU, plus plain VUS-PR and Adjusted VUS under 'full'."""
     label, score, _ = load_pair(benchmark, file, detector)
     if label.sum() == 0:
         raise HTTPException(400, 'the label has no anomaly')
     eng = FastVUS(L=L, cumulative=True)
-    auto = AutoVUS(eng)
+    auto = AutoVUS(eng, sides=SIDES)
     t0 = time.perf_counter()
     result = auto.compute(label, score)
     seconds = time.perf_counter() - t0
@@ -212,7 +216,7 @@ def anomaly_summary(k, a):
 
 
 @app.get('/select')
-def select(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(128)):
+def select(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(20)):
     result, buffers, seconds = selection(b, file, detector, L)
     return {
         'file': file, 'detector': detector, 'L': L,
@@ -225,15 +229,15 @@ def select(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Query(12
 
 
 @app.get('/curves')
-def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = Query(128)):
+def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = Query(20)):
     """The three curves of one anomaly: the detector curve, the random curve, the rule curve."""
     result, buffers, _ = selection(b, file, detector, L)
     if k < 0 or k >= len(result['anomalies']):
         raise HTTPException(404, 'no such anomaly')
     a = result['anomalies'][k]
     out = {'k': k, 'buffers': buffers, 'sides': {}}
-    for side in ('both',):
-        s = a['left']
+    for side, key in SIDE_KEYS:
+        s = a[key]
         out['sides'][side] = {
             'b': int(s['buffer_val']), 'idx': int(s['buffer_idx']), 'ratio': float(s['ratio']),
             'vus_curve': np.asarray(s['vus_curve'], dtype=float).tolist(),
@@ -250,7 +254,7 @@ def curves(file: str, detector: str, k: int, b: str = Query('tsb-ad'), L: int = 
 
 
 @app.get('/rank')
-def rank(file: str, b: str = Query('tsb-ad'), L: int = Query(128), metric: str = Query('autovus')):
+def rank(file: str, b: str = Query('tsb-ad'), L: int = Query(20), metric: str = Query('autovus')):
     """Every detector on this series, best first under the metric (from the export when present, else computed live)."""
     table = read_table(b, 'scores.json')
     rows = []
@@ -317,7 +321,7 @@ def toy(case: str = Query('A4'), L: int = Query(20)):
         raise HTTPException(404, 'unknown case')
     score = TOY[case]['score']
     eng = FastVUS(L=L, cumulative=True)
-    auto = AutoVUS(eng)
+    auto = AutoVUS(eng, sides=SIDES)
     t0 = time.perf_counter()
     result = auto.compute(TOY_LABEL, score)
     seconds = time.perf_counter() - t0
@@ -328,8 +332,8 @@ def toy(case: str = Query('A4'), L: int = Query(20)):
         'seconds': seconds, 'autovus': result['adjusted'], 'vus_full': full['vus'],
         'anomaly': anomaly_summary(0, a), 'buffers': auto.buffers.tolist(), 'sides': {},
     }
-    for side in ('both',):
-        s = a['left']
+    for side, key in SIDE_KEYS:
+        s = a[key]
         out['sides'][side] = {'b': int(s['buffer_val']), 'idx': int(s['buffer_idx']),
                               'vus_curve': np.asarray(s['vus_curve']).tolist(),
                               'random_curve': np.asarray(s['random_curve']).tolist(),
@@ -359,7 +363,7 @@ def time_metrics(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Qu
         try:
             if m == 'autovus':
                 eng = FastVUS(L=L, cumulative=True)
-                row['seconds'], r = _median_time(lambda: AutoVUS(eng).compute(label, score), repeats)
+                row['seconds'], r = _median_time(lambda: AutoVUS(eng, sides=SIDES).compute(label, score), repeats)
                 row['value'] = r['adjusted']
             elif m == 'vus_cpu':
                 eng = FastVUS(L=L)
@@ -465,7 +469,7 @@ def notes_put(body: Notes):
 # The Local, Finder, Coverage, Buffers and Suspicious pages read the tables
 # app/export_local.py writes to app/data/<benchmark>/local/; the game scores
 # its rounds live.
-LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game')
+LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game', 'speed')
 
 
 @lru_cache(maxsize=32)
@@ -508,7 +512,7 @@ def game_round(benchmark, file, detector, k, L):
         raise HTTPException(404, 'no such anomaly')
     a = auto.anomalies[k]
     st, en = int(a['start']), int(a['end'])
-    lo, hi = max(0, st - 2 * L), min(len(label), en + 2 * L + 1)
+    lo, hi = max(0, st - 10 * L), min(len(label), en + 10 * L + 1)
     v = scaled(values[lo:hi]) if values is not None else np.zeros(hi - lo)
     s = scaled(score)[lo:hi]
     return {'file': file, 'detector': detector, 'k': k, 'L': L, 'lo': lo, 'hi': hi, 'start': st, 'end': en,
@@ -516,8 +520,25 @@ def game_round(benchmark, file, detector, k, L):
             'seconds': seconds, 'values': [round(float(x), 4) for x in v], 'score': [round(float(x), 4) for x in s]}
 
 
+def draw_rounds(rounds, n):
+    """n rounds at random, the detection types as mixed as the pool allows."""
+    by = {}
+    for r in random.sample(rounds, len(rounds)):
+        by.setdefault(r['type'], []).append(r)
+    groups = list(by.values())
+    random.shuffle(groups)
+    out = []
+    while len(out) < n and any(groups):
+        for g in groups:
+            if g and len(out) < n:
+                out.append(g.pop())
+    random.shuffle(out)
+    return out
+
+
 @app.get('/game/rounds')
-def game_rounds(b: str = Query('tsb-ad')):
+def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None)):
+    """The rounds of game.json; with n, a new draw of n of them on every call."""
     path = os.path.join(DATA, b, 'local', 'game.json')
     if not os.path.exists(path):
         raise HTTPException(404, 'no game.json; run app/export_local.py')
@@ -529,4 +550,50 @@ def game_rounds(b: str = Query('tsb-ad')):
             out.append(game_round(b, r['file'], r['detector'], int(r['k']), int(g.get('L', 20))))
         except HTTPException:
             continue
-    return {'L': g.get('L', 20), 'rounds': out}
+    pool = len(out)
+    if n is not None and n < pool:
+        out = draw_rounds(out, max(n, 1))
+    return {'L': g.get('L', 20), 'pool': pool, 'rounds': out}
+
+
+# ---------------------------------------------------------------- endpoints: the stitched score
+import oracle as orc  # noqa: E402
+
+
+@lru_cache(maxsize=64)
+def stitched_oracle(benchmark, file, winners, norm='minmax'):
+    """Region k (midpoint split) takes winners[k]'s score on the common scale `norm` (oracle.NORMS)."""
+    if norm not in orc.NORMS:
+        raise HTTPException(400, f'unknown norm {norm}')
+    label, _, _ = load_pair(benchmark, file, 'Random')
+    try:
+        score = orc.stitch(label, lambda d: load_pair(benchmark, file, d)[1], list(winners), norm)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    t0 = time.perf_counter()
+    m = orc.evaluate(label, score)
+    seconds = time.perf_counter() - t0
+    return score, {'winners': list(winners), 'norm': norm, 'vusG': [round(float(x), 3) for x in m['vusG']],
+                   'autoG': round(m['autoG'], 3), 'aucpr': round(m['aucpr'], 3),
+                   'auto': [round(float(x), 3) for x in m['auto']], 'seconds': seconds}
+
+
+@app.get('/local/oracle')
+def local_oracle(file: str, winners: str, b: str = Query('tsb-ad'), norm: str = Query('minmax'), bins: int = Query(2000),
+                 start: int = Query(0), end: int | None = Query(None)):
+    score, out = stitched_oracle(b, file, tuple(winners.split(',')), norm)
+    s, e = window(len(score), start, end)
+    lo, hi, nb = binned(scaled(score)[s:e], bins)
+    return {**out, 'n': int(len(score)), 'start': s, 'end': e, 'bins': nb, 'lo': lo, 'hi': hi}
+
+
+@lru_cache(maxsize=2)
+def _scores_table(benchmark):
+    return read_table(benchmark, 'scores.json') or {'files': {}}
+
+
+@app.get('/local/aucpr/{file}')
+def local_aucpr(file: str, b: str = Query('tsb-ad')):
+    """AUC-PR of every detector on the series (from scores.json, app/export.py)."""
+    row = _scores_table(b)['files'].get(file, {})
+    return {d: v.get('auc_pr') for d, v in row.items()}

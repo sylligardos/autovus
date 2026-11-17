@@ -4,19 +4,24 @@
 // behind the biggest move, and every metric against every other.
 
 import { useMemo } from "react";
-import { METRICS, REFERENCES, f2, metricLabel, shortFile, type MetricKey, type PairRow, type State } from "@/lib/model";
+import { METRICS as ALL_METRICS, f2, metricLabel, shortFile, type MetricKey, type PairRow, type State } from "@/lib/model";
 import { rankDetectors, toMap, weightedKendall } from "@/lib/stats";
 import { expand, type CompactTables } from "@/lib/compact";
 import { useRemembered } from "@/lib/remember";
 import { SeriesPair } from "./SeriesPair";
 
 const ROW = 18, HEAD = 22;
+// L=20 table (app/export_rankings20.py): no ROC metrics, references = the oracle and the two stitched scores.
+const METRICS = ALL_METRICS.filter((m) => !["vus_roc", "auc_roc"].includes(m.key));
+const REFERENCES = ["Oracle", "Stitched min-max", "Stitched median"];
+const known = (k?: string) => (METRICS.some((m) => m.key === k) ? (k as MetricKey) : undefined);
 
 export function RankingsView({ state, tables: packed, initial }: { state: State; tables: CompactTables; initial: { a?: string; b?: string } }) {
   const tables = useMemo(() => expand(packed), [packed]);
   const k = `rankings:${state.benchmark}:`;
-  const [am, setAm] = useRemembered<MetricKey>(k + "a", "auc_pr", initial.a as MetricKey);
-  const [bm, setBm] = useRemembered<MetricKey>(k + "b", "autovus", initial.b as MetricKey);
+  const [amRaw, setAm] = useRemembered<MetricKey>(k + "a", "auc_pr", known(initial.a));
+  const [bmRaw, setBm] = useRemembered<MetricKey>(k + "b", "autovus", known(initial.b));
+  const am = known(amRaw) ?? "auc_pr", bm = known(bmRaw) ?? "autovus";
   const [agg, setAgg] = useRemembered<"mean" | "median">(k + "agg", "mean");
   const [refs, setRefs] = useRemembered(k + "refs", true);
   const [countSel, setCount] = useRemembered<number | null>(k + "count", null);
@@ -93,7 +98,7 @@ export function RankingsView({ state, tables: packed, initial }: { state: State;
       <main className="content">
         <section className="panel" aria-label="The pair">
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr) minmax(0, 5fr)", gap: "0 12px", alignItems: "start" }}>
-            <Bars rows={shownA} title={`A · ${metricLabel(am)}`} color={lineColor} delay={tables.summary?.oracle_delay} accent={false} />
+            <Bars rows={shownA} title={`A · ${metricLabel(am)}`} color={lineColor} accent={false} />
             <div>
               <div className="eyebrow" style={{ height: HEAD, display: "flex", alignItems: "center", justifyContent: "center" }}>rank moves</div>
               <svg viewBox={`0 0 200 ${ROW * count}`} width="100%" height={ROW * count} preserveAspectRatio="none" style={{ display: "block" }} aria-label="Rank transitions" role="img">
@@ -105,7 +110,7 @@ export function RankingsView({ state, tables: packed, initial }: { state: State;
                 })}
               </svg>
             </div>
-            <Bars rows={shownB} title={`B · ${metricLabel(bm)}`} color={lineColor} delay={tables.summary?.oracle_delay} accent />
+            <Bars rows={shownB} title={`B · ${metricLabel(bm)}`} color={lineColor} accent />
           </div>
         </section>
 
@@ -152,28 +157,27 @@ export function RankingsView({ state, tables: packed, initial }: { state: State;
   );
 }
 
-function Bars({ rows, title, color, accent, delay }: { rows: { detector: string; value: number }[]; title: string; color: (d: string) => string; accent: boolean; delay?: unknown }) {
+function Bars({ rows, title, color, accent }: { rows: { detector: string; value: number }[]; title: string; color: (d: string) => string; accent: boolean }) {
   const max = Math.max(...rows.map((r) => r.value), 1e-9);
   return (
     <div>
       <div className="eyebrow" style={{ height: HEAD, display: "flex", alignItems: "center", color: accent ? "var(--accent)" : undefined }}>{title}</div>
       <div style={{ display: "grid", gridTemplateColumns: "18px 130px minmax(0, 1fr) 36px", gap: "0 8px", alignItems: "center", fontSize: 11, gridAutoRows: ROW }}>
-        {rows.map((r, i) => <Row key={r.detector} i={i} r={r} ref_={REFERENCES.includes(r.detector)} c={color(r.detector)} max={max} delay={delay} />)}
+        {rows.map((r, i) => <Row key={r.detector} i={i} r={r} ref_={REFERENCES.includes(r.detector)} c={color(r.detector)} max={max} />)}
       </div>
     </div>
   );
 }
-function Row({ i, r, ref_, c, max, delay }: { i: number; r: { detector: string; value: number }; ref_: boolean; c: string; max: number; delay?: unknown }) {
+function Row({ i, r, ref_, c, max }: { i: number; r: { detector: string; value: number }; ref_: boolean; c: string; max: number }) {
   const strong = c !== "var(--missed)" && c !== "var(--accent)";
   return (
     <>
       <span className="mono muted">{i + 1}</span>
       <span style={{ display: "flex", alignItems: "center", gap: 5, color: strong && !ref_ ? c : undefined, fontWeight: strong && !ref_ ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {ref_ && <span className="ref-dot" style={{ borderColor: r.detector === "Random" ? "var(--muted)" : "var(--ink)" }} />}{r.detector}
-        {r.detector === "Delayed oracle" && delay != null && <span className="mono muted">+{String(delay)}</span>}
+        {ref_ && <span className="ref-dot" style={{ borderColor: "var(--ink)" }} />}{r.detector}
       </span>
       <span style={{ height: 10, background: "var(--border-soft)", borderRadius: 3, overflow: "hidden" }}>
-        <span style={{ display: "block", width: `${Math.max(0, r.value) / max * 100}%`, height: "100%", background: ref_ ? `repeating-linear-gradient(45deg, ${r.detector === "Random" ? "var(--missed)" : "var(--ink)"} 0 3px, var(--panel) 3px 6px)` : c }} />
+        <span style={{ display: "block", width: `${Math.max(0, r.value) / max * 100}%`, height: "100%", background: ref_ ? `repeating-linear-gradient(45deg, var(--ink) 0 3px, var(--panel) 3px 6px)` : c }} />
       </span>
       <span className="mono" style={{ textAlign: "right" }}>{f2(r.value)}</span>
     </>

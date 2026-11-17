@@ -7,13 +7,13 @@ import { param, stateFrom } from "@/lib/model";
 export default async function Rankings({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
   const state = stateFrom(params);
-  const t = await loadTables(state.benchmark);
+  const t = await loadTables(state.benchmark, "scores20.json");
   return (
     <>
       <TopBar state={state} current="/rankings" />
       <div className="page">
         {t ? <RankingsView state={state} tables={compact(t)} initial={{ a: param(params, "a") ?? undefined, b: param(params, "bm") ?? undefined }} />
-          : <main className="content"><div className="panel"><span className="muted">No tables yet. Run <code>conda run -n autovus python app/export.py</code>.</span></div></main>}
+          : <main className="content"><div className="panel"><span className="muted">No tables yet. Run <code>conda run -n autovus python app/export_rankings20.py</code>.</span></div></main>}
       </div>
     </>
   );

@@ -9,15 +9,15 @@ import { loadCurves, loadNotes, loadRank, loadScoreDoc, loadSelect, loadSeriesDo
 import { METRICS, REFERENCES, TYPE_COLOR, f2, fmt, fsec, href, shortFile, type Anomaly, type CurvesDoc, type MetricKey, type RankRow, type ScoreDoc, type SelectDoc, type SeriesDoc, type SeriesMeta, type State, type Summary } from "@/lib/model";
 import { Lane, type Band, type Zone } from "./Lane";
 import { useRemembered } from "@/lib/remember";
-import { LineChart } from "./LineChart";
+import { Drawer } from "./Drawer";
 
 const PINS_KEY = "autovus.pins";
 const MAX_TOP = 8;
+const L = 20;                                      // the one buffer length of the demo
 // The metrics under a lane's name: the rank table's key, its label, the live /select field.
 const LANE_METRICS: [MetricKey, string, "autovus" | "skill_full" | "vus_full"][] = [
   ["autovus", "AutoVUS", "autovus"], ["adj_vus", "Adj. VUS", "skill_full"], ["vus_pr", "VUS-PR", "vus_full"],
 ];
-const BEFORE = "var(--early)", AFTER = "var(--down)";
 type Hover = { detector: string; a: Anomaly; left: number } | null;
 
 function readPins(): string[] { try { return JSON.parse(localStorage.getItem(PINS_KEY) ?? "[]"); } catch { return []; } }
@@ -34,7 +34,6 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
   const [file, setFile] = useRemembered(k + "file", firstFile, initialFile);
   const upload = file.startsWith("upload:");
   const dataset = useMemo(() => datasets.find((d) => seriesByDataset[d].some((s) => s.file === file)) ?? datasets[0], [datasets, seriesByDataset, file]);
-  const [L, setL] = useRemembered(k + "L", 128);
   const [order, setOrder] = useRemembered<MetricKey>(k + "order", "autovus");
   const [topN, setTopN] = useRemembered(k + "top", 3, initialTop);
   const [pins, setPins] = useState<string[]>(initialPins);
@@ -98,7 +97,6 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, b, file, L]);
-  useEffect(() => { setSelects({}); setPicked(null); setCurves(null); }, [L]);
 
   // The zoom window: finer bins for every shown lane, fetched once the drag settles.
   useEffect(() => {
@@ -168,13 +166,6 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
             <button type="button" className="btn" style={{ flex: 1 }} onClick={() => step(1)} disabled={upload}>Next</button>
             <button type="button" className="btn btn-primary" style={{ flex: 2 }} onClick={sample}>Sample</button>
           </div>
-        </div>
-        <div className="field">
-          <span>Buffer</span>
-          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, marginTop: 4 }}>
-            <span style={{ display: "flex", justifyContent: "space-between" }}>L, largest buffer <span className="mono" style={{ color: "var(--ink)" }}>{L}</span></span>
-            <input type="range" min={16} max={512} step={16} value={L} onChange={(e) => setL(Number(e.target.value))} />
-          </label>
         </div>
         <div className="field" style={{ paddingTop: 12, borderTop: "1px solid var(--border)" }}>
           <span>Computed</span>
@@ -282,33 +273,5 @@ export function SeriesView({ state, summary, initialFile, initialPins, initialTo
         </section>
       </main>
     </>
-  );
-}
-
-function Drawer({ curves, a, L }: { curves: CurvesDoc; a: Anomaly; L: number }) {
-  const z = curves.zoom;
-  const bands: Band[] = [{ from: a.start - z.from, to: a.end + 1 - z.from, color: "var(--label)", opacity: 0.45 }];
-  if (a.b_left > 0) bands.push({ from: a.start - a.b_left - z.from, to: a.start - z.from, color: BEFORE, opacity: 0.35 });
-  if (a.b_right > 0) bands.push({ from: a.end + 1 - z.from, to: a.end + 1 + a.b_right - z.from, color: AFTER, opacity: 0.35 });
-  const sides = Object.entries(curves.sides);
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr) minmax(0, 3fr)", gap: 16 }}>
-      <figure style={{ margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-        <figcaption className="muted" style={{ fontSize: 12 }}><b style={{ color: "var(--ink)" }}>(i) the anomaly</b> score, label, the selected buffer · points {fmt(z.from)} to {fmt(z.to)}</figcaption>
-        <Lane lo={z.lo} hi={z.hi} bins={z.bins} n={z.to - z.from} height={150 * sides.length + 6 * (sides.length - 1)} ymin={0} ymax={1} bands={bands} />
-      </figure>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {sides.map(([side, s]) => (
-          <LineChart key={side} x={curves.buffers} title={`(ii) ${side === "both" ? "both sides" : `${side} side`} · detector C(b) in ink, random G(b) in grey`} height={150}
-            lines={[{ y: s.random_curve, color: "var(--missed)" }, { y: s.vus_curve, color: "var(--ink)" }]} mark={s.b} left="b = 0" right={String(L)} />
-        ))}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {sides.map(([side, s]) => (
-          <LineChart key={side} x={curves.buffers} title={`(iii) ${side === "both" ? "both sides" : `${side} side`} · the rule, first argmax is b* = ${s.b}`} height={150}
-            lines={[{ y: s.rule_curve, color: "var(--accent)", width: 1.8 }]} mark={s.b} dot={{ line: 0, i: s.idx }} left="b = 0" right={String(L)} />
-        ))}
-      </div>
-    </div>
   );
 }

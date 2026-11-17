@@ -7,13 +7,13 @@ benchmark exports; no metric is recomputed here.
 
 Inputs (experiments/, not in git):
     local_benchmark/series/<series>.npz   per-anomaly local scores (variant C), AutoVUS@20
-    local_benchmark/global_adjusted.npz   global chance-adjusted VUS-PR at every L
+    local_benchmark/global_adjusted.npz   global VUS-PR at every L (field 'vus')
     buffers/anomalies_ps20.csv            per-side AutoVUS buffers and types, L = 20
 app/data/<benchmark>/anomalies.csv        per-side buffers and types, L = 128 (type_ps)
 
 Outputs (app/data/<benchmark>/local/):
-    series/<series>.json  anomalies, per-anomaly local AutoVUS (detector x anomaly),
-                          global AutoVUS, global adjusted VUS-PR at L = 0..128
+    series/<series>.json  anomalies, per-anomaly local AutoVUS@20 (detector x anomaly),
+                          global AutoVUS, global VUS-PR at L = 0..128
     pairs.json            per (series, detector): K, global AutoVUS, mean and min local
     cover.json            per series: the detector x anomaly matrix (x100, -999 = no run)
     buffers_20.json, buffers_128.json
@@ -21,6 +21,9 @@ Outputs (app/data/<benchmark>/local/):
                           mean buffer before and after
     odd.json              suspicious anomalies with a window around each
     game.json             the game's rounds (series, detector, anomaly); edit by hand
+    speed.json            the Intro speed box: total time of every (series, detector) under
+                          the original VUS, FastVUS, FastVUS-GPU and AutoVUS, and the mean
+                          per-pair ratio to the original VUS (the paper's runtime runs, L = 128)
 """
 import argparse
 import json
@@ -82,9 +85,9 @@ def local_tables(out, detectors):
         z = np.load(f)
         name = f.name[:-4]                                   # '<series>.csv'
         dets = [str(d) for d in z['detectors']]
-        loc = adjusted(z['auto20_area'], z['auto20_random'], 20)         # (D, K)
+        loc = adjusted(z['auto20_area'], z['auto20_random'], 20)         # (D, K) buffers capped at b*
         K = loc.shape[1]
-        vus = np.stack([g['adjusted'][gi[(name, d)]] for d in dets])     # (D, 129)
+        vus = np.stack([g['vus'][gi[(name, d)]] for d in dets])          # (D, 129) plain VUS-PR
         dump({'file': name, 'anomalies': [[int(a), int(b)] for a, b in zip(z['start'], z['end'])], 'detectors': dets,
               'auto': [r2(row) for row in loc], 'autoG': r2(z['auto20_adjusted']), 'vusG': [r2(row, 3) for row in vus]},
              out / 'series' / (name + '.json'))
@@ -170,13 +173,32 @@ def odd_table(out, p):
     print(f'odd: {n} anomalies tested, {len(items)} suspicious in {flag.series.nunique()} series')
 
 
+def speed_table(out):
+    """speed.json from the paper's runtime experiments (summed 'Metric time')."""
+    res = EXP / 'all_metrics_tsb_def_params' / 'results'
+    opt = '_128_1_dynamic_plus_globalmask_function_optimized_subsampled.csv'
+    runs = [('vus', 'VUS', 'original', res / 'tsb_VUS_128.csv'),
+            ('fastvus', 'FastVUS', 'CPU, exact', res / ('tsb_FF-VUS' + opt)),
+            ('fastvus_gpu', 'FastVUS-GPU', 'approximate', res / ('tsb_FF-VUS-GPU' + opt)),
+            ('autovus', 'AutoVUS', 'on FastVUS, CPU', EXP / 'autovus_runtime' / 'results' / 'tsb_autovus_L128_step1.csv')]
+    base, rows = None, []
+    for key, label, tag, path in runs:
+        t = pd.read_csv(path).set_index(['Time series', 'Detector'])['Metric time']
+        if base is None:
+            base = t
+        ratio = None if key == 'vus' else round(float((base / t.reindex(base.index)).mean()), 2)
+        rows.append({'key': key, 'label': label, 'tag': tag, 'seconds': round(float(t.sum()), 1), 'ratio': ratio})
+    dump({'pairs': int(len(base)), 'series': int(base.index.get_level_values(0).nunique()), 'L': 128, 'rows': rows}, out / 'speed.json')
+    print('speed:', ', '.join(f"{r['label']} {r['seconds']} s x{r['ratio']}" for r in rows))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--benchmark', default='tsb-ad')
-    ap.add_argument('--only', nargs='*', default=None, help='local buffers odd game (default: all)')
+    ap.add_argument('--only', nargs='*', default=None, help='local buffers odd game speed (default: all)')
     a = ap.parse_args()
     out = ROOT / 'app' / 'data' / a.benchmark / 'local'
-    parts = set(a.only or ['local', 'buffers', 'odd', 'game'])
+    parts = set(a.only or ['local', 'buffers', 'odd', 'game', 'speed'])
     p = TSADParser()
     detectors = sorted(str(d) for d in p.get_detectors())
     if 'local' in parts:
@@ -189,6 +211,8 @@ def main():
         buffer_table(b128, out / 'buffers_128.json', 128)
     if 'odd' in parts:
         odd_table(out, p)
+    if 'speed' in parts:
+        speed_table(out)
     if 'game' in parts and not (out / 'game.json').exists():
         dump({'L': 20, 'sides': 'per_side', 'rounds': [{'file': f, 'detector': d, 'k': k} for f, d, k in GAME]}, out / 'game.json')
         print('game: first draft written')

@@ -14,12 +14,14 @@ export default async function Local({ searchParams }: { searchParams: Promise<Re
   const seriesByDataset: Record<string, SeriesMeta[]> = Object.fromEntries(lists.filter(([, l]) => l.length));
   const det = param(params, "det");
   const v = param(params, "v")?.split(",").map(Number);
+  const a = param(params, "a");
+  const pick = a !== null && /^\d+$/.test(a) ? Number(a) : null;
   const view: [number, number] | null = v && v.length === 2 && v.every(Number.isFinite) && v[1] > v[0] ? [v[0], v[1]] : null;
   return (
     <>
       <TopBar state={state} current="/local" />
       <LocalView state={state} seriesByDataset={seriesByDataset} initialFile={param(params, "s")}
-        initialDet={det ? det.split(",").filter(Boolean) : null} initialView={view} />
+        initialDet={det ? det.split(",").filter(Boolean) : null} initialView={view} initialPick={pick} />
     </>
   );
 }

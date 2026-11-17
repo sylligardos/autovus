@@ -1,21 +1,19 @@
 import Link from "next/link";
 import { TopBar } from "@/components/TopBar";
 import { Toy } from "@/components/Toy";
-import { loadSummary } from "@/lib/api";
-import { loadTables } from "@/lib/tables";
-import { METRICS, fmt, fsec, href, stateFrom } from "@/lib/model";
+import { SpeedBox, type SpeedTable } from "@/components/SpeedBox";
+import { loadLocalTable, loadSummary } from "@/lib/api";
+import { METRICS, fmt, href, stateFrom } from "@/lib/model";
 
 export default async function Intro({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const state = stateFrom(await searchParams);
   const summary = await loadSummary(state.benchmark);
-  const tables = await loadTables(state.benchmark);
-  const autoTotal = tables ? tables.rows.reduce((s, r) => s + r.t_autovus, 0) : null;
+  const speed = await loadLocalTable<SpeedTable>(state.benchmark, "speed");
   const nMetrics = METRICS.length;
   const cards = [
-    { n: "01", title: "Series", text: "One series, every detector as a lane, the buffer chosen for every anomaly shaded on it.", cta: "Sample a series", to: href("/series", state) },
+    { n: "01", title: "Review", text: "One series, every detector as a lane, the buffer chosen for every anomaly shaded on it.", cta: "Open a series", to: href("/local", state) },
     { n: "02", title: "Cases", text: "Every series and detector as a point, one metric against another. Coloured by how the detector's rank on the series moves, the biggest moves first.", cta: "Biggest swing", to: href("/cases", state) },
     { n: "03", title: "Rankings", text: "Two metrics side by side with every rank move drawn between them, a delayed oracle and a random score as references.", cta: "AUC-PR to AutoVUS", to: href("/rankings", state) },
-    { n: "04", title: "Speed", text: "Every metric timed on the whole benchmark, every series against its length, your own label and score timed live.", cta: "See the runtimes", to: href("/speed", state) },
   ];
   return (
     <>
@@ -35,7 +33,6 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
               <div className="tile"><span className="n">{summary.n_anomalies === null ? "…" : fmt(summary.n_anomalies)}</span><span className="l">anomalies</span></div>
               <div className="tile"><span className="n">{fmt(summary.n_detectors)}</span><span className="l">detectors</span></div>
               <div className="tile"><span className="n">{nMetrics}</span><span className="l">metrics</span></div>
-              <div className="tile" style={{ borderColor: "var(--accent)" }}><span className="n" style={{ color: "var(--accent)" }}>{autoTotal ? fsec(autoTotal) : "…"}</span><span className="l">AutoVUS on all of it</span></div>
             </div>
           ) : (
             <div className="panel"><span className="muted">The Python side is not running. See app/README.md.</span></div>
@@ -51,6 +48,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
             </Link>
           ))}
         </section>
+        {speed && <SpeedBox state={state} speed={speed} />}
         {summary && <Toy />}
         <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }} aria-label="Vocabulary">
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">VUS</span><span className="muted" style={{ fontSize: 13 }}>The volume under the surface of the PR or ROC curve over every buffer from 0 to L. One buffer grid for every anomaly of the series.</span></div>
