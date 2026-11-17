@@ -41,7 +41,6 @@ Demo:
 - `src/experiments/`: experiment and check scripts. Run them from the repo root.
 - `app/`: the demo (FastAPI + Next.js) and its export.
 - `src/notebooks/`: analysis notebooks.
-- `references/`: paper plan, feedback, past submissions. The paper itself lives in Overleaf.
 - `docs/supplementary/`: results left out of the paper for space reasons.
 - `experiments/`: outputs (not in git).
 
