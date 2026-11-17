@@ -5,9 +5,10 @@
 Per flagged anomaly: a window around it (anomaly +- max(3 len, 100), at most 300 points)
 with the series (min-max) and the median over detectors of the min-max scores.
 """
+from pathlib import Path
 import json, sys
 import numpy as np, pandas as pd
-ROOT = '/home/sylli/Documents/autovus'
+ROOT = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, ROOT + '/src'); sys.path.insert(0, ROOT + '/app/api')
 from tsad_parser import TSADParser
 from bench import load_series, load_score

@@ -193,3 +193,29 @@ references/autovus-paper
 # demo export, too big for GitHub (124 MB); regenerate with app/export.py
 app/data/*/anomalies.csv
 app/data/*/local/series/
+
+# local only, not for the public repo
+TRACKER.md
+app/data/notes.json
+/scripts
+docs/local_evaluation.md
+
+# pre-refactor scripts (old VUSNumpy/VUSTorch), kept local
+src/experiments/ablation_study.py
+src/experiments/compare_add_slopes.py
+src/experiments/compare_confusion_matrix.py
+src/experiments/compare_existence_reward.py
+src/experiments/compare_rank_vus.py
+src/experiments/compare_threshold_cap.py
+src/experiments/compute_ranking_adapt.py
+src/experiments/evaluate_vus.py
+src/experiments/existence_skip_analysis.py
+src/experiments/global_mask_stats.py
+src/experiments/test_decumulated_vus.py
+src/experiments/test_per_anomaly_buffer.py
+src/experiments/verify_cumulative.py
+src/experiments/vus_visualizer.py
+src/notebooks/experimental_results.ipynb
+app/data/tsb-ad/local/game_draft5.json
+app/data/tsb-ad/local/game_kept18.json
+app/data/tsb-ad/local/game_picked6.json

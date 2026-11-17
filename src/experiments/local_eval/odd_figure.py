@@ -1,9 +1,10 @@
 """Five flagged anomalies: left = the flagged one, right = the best-caught one in the same series; series + 3 detectors that catch the others."""
+from pathlib import Path
 import sys
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-ROOT = '/home/sylli/Documents/autovus'
+ROOT = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, ROOT + '/src'); sys.path.insert(0, ROOT + '/app/api')
 from tsad_parser import TSADParser
 from bench import load_series, load_score

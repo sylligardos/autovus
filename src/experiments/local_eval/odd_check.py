@@ -1,7 +1,7 @@
 """Quick check: anomalies that most informative detectors score worst within their series (local AutoVUS@20)."""
 import numpy as np, pandas as pd
 from scipy.stats import norm, rankdata
-a = pd.read_csv('/home/sylli/Documents/autovus/experiments/local_benchmark/anomalies.csv', usecols=['series', 'detector', 'k', 'len', 'auto20'])
+a = pd.read_csv('experiments/local_benchmark/anomalies.csv', usecols=['series', 'detector', 'k', 'len', 'auto20'])
 out = []
 for s, g in a.groupby('series'):
     M = g.pivot(index='detector', columns='k', values='auto20').dropna()
@@ -37,4 +37,4 @@ print('\ntop examples (K <= 20):')
 ex = sig[sig.K <= 20].sort_values(['q', 'votes'], ascending=[True, False]).head(10)
 for _, e in ex.iterrows():
     print(f"  {e.series[:45]:45s} K={e.K:3d} A{e.k+1:<3d} len={e.len:4d} worst for {e.votes:4.0f}/{e.D:2d} q={e.q:.1e}  median this {e.med_this:.2f} vs others {e.med_others:.2f}")
-r.to_csv('/tmp/claude-1000/-home-sylli-Documents-autovus/47b16c62-67b2-4382-b2e0-3cedbc623c20/scratchpad/data/odd_check.csv', index=False)
+r.to_csv('experiments/local_eval/odd_check.csv', index=False)

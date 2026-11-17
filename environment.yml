@@ -118,4 +118,4 @@ dependencies:
     - pyparsing==3.2.1
     - lightning-utilities==0.15.3
     # ── tsbadparser (editable install, not on PyPI) ────────────────────────
-    # After creating the env, run:  pip install -e ~/Documents/tsb-ad-parser
+    # The benchmark reader (tsad_parser) is vendored in src/tsad_parser, nothing to install.
