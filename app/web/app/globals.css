@@ -180,3 +180,22 @@ h1, h2, h3 { margin: 0; }
 .card:hover { border-color: var(--accent); color: var(--ink); }
 input[type="range"] { accent-color: var(--accent); }
 input[type="checkbox"] { accent-color: var(--accent); }
+
+/* the one sentence on top of a page: what it answers, then how to read it */
+.page-line { margin: 0; font-size: 18px; font-weight: 600; }
+.page-line span { color: var(--muted); font-size: 15px; font-weight: 400; }
+
+/* profiles graph: sizes stay constant on screen under zoom (--z = 1 / scale) */
+.pf-node { r: calc(3.6px * var(--z, 1)); stroke: var(--panel); stroke-width: calc(0.6px * var(--z, 1)); cursor: pointer; }
+.pf-node.near { r: calc(5px * var(--z, 1)); }
+.pf-node.sel { r: calc(7px * var(--z, 1)); stroke: var(--ink); stroke-width: calc(2px * var(--z, 1)); }
+.pf-edge { stroke: var(--muted); stroke-width: calc(0.8px * var(--z, 1)); }
+.pf-pie { cursor: pointer; }
+.pf-pie .ring { fill: none; stroke: var(--panel); stroke-width: 1px; }
+.pf-pie.sel .ring { stroke: var(--ink); stroke-width: 2.5px; }
+.pf-edge.lit { stroke: var(--ink); stroke-width: calc(1.4px * var(--z, 1)); }
+.pf-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
+.pf-row:hover, .pf-row[aria-pressed="true"] { background: var(--subtle); border-color: var(--border); }
+.pf-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: #FFFFFF; font-weight: 700; font-size: 12px; }
+.pf-link { padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; min-width: 0; }
+.pf-link:hover { color: var(--accent); }

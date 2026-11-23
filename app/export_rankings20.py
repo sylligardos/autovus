@@ -9,7 +9,7 @@ Reused, every (series, detector):
 Derived, per series:
     Oracle           the detector with the best AUC-PR, all its values
 Computed, per series (the only new work):
-    Stitched min-max, Stitched median   app/api/oracle.py stitch with the winners
+    Stitched score   app/api/oracle.py stitch with the winners
                      of the local AutoVUS@20 (coverage tie rule), the same
                      four metrics computed as above
 
@@ -39,7 +39,7 @@ import oracle as orc  # noqa: E402
 L = 20
 EXP = os.path.join(_ROOT, 'experiments', 'local_benchmark')
 OUT = os.path.join(_ROOT, 'app', 'data', 'tsb-ad')
-STITCHED = {'Stitched min-max': 'minmax', 'Stitched median': 'median'}
+STITCHED = {'Stitched score': 'median'}
 
 
 def metrics(label, score):
@@ -53,7 +53,7 @@ def metrics(label, score):
 
 
 def stitched(file):
-    """The two stitched rows of one series, or {} when there is nothing to stitch."""
+    """The stitched row of one series, or {} when there is nothing to stitch."""
     z = np.load(os.path.join(EXP, 'series', file + '.npz'))
     if len(z['detectors']) == 0 or len(z['start']) == 0:
         return file, {}, []

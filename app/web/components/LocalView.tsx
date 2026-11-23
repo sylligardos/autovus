@@ -19,7 +19,7 @@ type Sort = "ap" | "vus" | "auto" | "local";         // the column the detectors
 const SORT_KEY = { ap: "ap", vus: "vv", auto: "gv", local: "lv" } as const;
 const L = 20;                                      // the one buffer length of the demo
 const COLS = "150px minmax(0, 1fr) 56px 56px 64px 56px";
-const NORMS: [OracleNorm, string][] = [["minmax", "Stitched score"], ["median", "Stitched score (median)"]];
+const NORMS: [OracleNorm, string][] = [["median", "Stitched score"]];
 type Oracles = Partial<Record<OracleNorm, OracleDoc>>;
 const GAP = 4;                                     // percent between two anomaly markers
 
@@ -221,7 +221,7 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
         <button type="button" className="btn" onClick={() => step(-1)}>Prev</button>
         <button type="button" className="btn" onClick={() => step(1)}>Next</button>
         <button type="button" className="btn btn-primary" onClick={sample}>Sample</button>
-        <span style={{ marginLeft: "auto" }}><NotesButton file={file} name={seriesName(file)} /></span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}><NotesButton file={file} name={seriesName(file)} onOpen={setFile} /></span>
       </div>
 
       <section className="panel" aria-label="Series and detectors" style={{ padding: 0, overflowX: "auto", gap: 0 }}>

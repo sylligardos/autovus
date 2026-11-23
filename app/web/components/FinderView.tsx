@@ -1,17 +1,32 @@
 "use client";
-// The Finder: where the whole-series AutoVUS and the per-anomaly AutoVUS
-// disagree. Datasets first, then the series of one dataset; the top pairs
-// of each case on the side. A series opens on the Local page.
+// Explore, the "Global vs local" tab: where the whole-series AutoVUS (global)
+// and the per-anomaly AutoVUS (local) are far apart. Datasets first, then the
+// series of one dataset, each with its largest gap; every pair as a point of
+// the scatter on top; the top pairs of the chosen case on the side, 20 at a
+// time. A series opens on the Series tab.
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { loadLocalTable } from "@/lib/api";
 import { href, type State } from "@/lib/model";
-import { datasetOf, seriesName, type PairsTable } from "@/lib/local";
+import { datasetOf, seriesName, type PairsTable, type StitchedTable } from "@/lib/local";
 import { useRemembered } from "@/lib/remember";
+import { GapScatter } from "./GapScatter";
 
-type Mode = "mean" | "worst";
-const LABEL: Record<Mode, string> = { mean: "AutoVUS vs mean per-anomaly AutoVUS", worst: "AutoVUS vs lowest per-anomaly AutoVUS" };
+type Mode = "mean" | "worst" | "stitched";
+const AXES: Record<Mode, { x: string; y: string }> = {
+  mean: { x: "Mean AutoVUS Local", y: "AutoVUS Global" }, worst: { x: "Lowest AutoVUS Local", y: "AutoVUS Global" },
+  stitched: { x: "Best detector AutoVUS", y: "Stitched score AutoVUS" },
+};
+const LABEL: Record<Mode, string> = { mean: "AutoVUS Global minus mean AutoVUS Local", worst: "AutoVUS Global minus lowest AutoVUS Local", stitched: "Stitched score AutoVUS minus best detector AutoVUS" };
+// What the chosen comparison brings out, shown under the buttons.
+const GOAL: Record<Mode, string> = {
+  mean: "Detectors whose score on the whole series differs from their average score per anomaly.",
+  worst: "Detectors with a good score on the whole series that miss one of its anomalies.",
+  stitched: "Series where combining detectors per anomaly beats the best single detector.",
+};
+const STEP = 20;   // top pairs shown at first, and added by "Show more"
 const signed = (g: number) => (g >= 0 ? "+" : "−") + Math.abs(g).toFixed(2);
 const barColor = (g: number) => (g >= 0 ? "var(--late)" : "var(--accent)");
 
@@ -19,13 +34,18 @@ export function FinderView({ state }: { state: State }) {
   const b = state.benchmark;
   const [t, setT] = useState<PairsTable | null>(null);
   const [error, setError] = useState(false);
+  const [st, setSt] = useState<StitchedTable | null>(null);
   const [mode, setMode] = useRemembered<Mode>(`finder:${b}:mode`, "mean");
   const [dataset, setDataset] = useRemembered<string | null>(`finder:${b}:dataset`, null);
   const [off, setOff] = useState<number[]>([]);
+  const [more, setMore] = useState<{ key: string; n: number }>({ key: "", n: STEP });
+  const [mark, setMark] = useState<number[]>([]);   // cases to mark on the plot, as indexes of view.top
+  const router = useRouter();
 
   useEffect(() => {
     let live = true;
     loadLocalTable<PairsTable>(b, "pairs").then((x) => { if (live) { if (x) setT(x); else setError(true); } });
+    loadLocalTable<StitchedTable>(b, "stitched").then((x) => { if (live) setSt(x); });
     return () => { live = false; };
   }, [b]);
 
@@ -33,44 +53,60 @@ export function FinderView({ state }: { state: State }) {
   const view = useMemo(() => {
     if (!t) return null;
     const offSet = new Set(off);
-    const gap = (i: number, m: Mode) => t.a[i] - (m === "mean" ? t.m[i] : t.n[i]);
-    const rank = (g: number, m: Mode) => (m === "mean" ? Math.abs(g) : g);
-    const keep = (i: number, m: Mode) => !offSet.has(t.d[i]) && (m === "mean" || t.K[i] > 1) && (!dataset || ds[t.s[i]] === dataset);
+    const rank = (g: number) => (mode === "mean" ? Math.abs(g) : g);
+    // Series with one anomaly are left out everywhere: their local and global scores are equal.
+    const keep = (i: number) => !offSet.has(t.d[i]) && t.K[i] > 1 && (!dataset || ds[t.s[i]] === dataset);
     const N = t.s.length;
-    const acc = new Map<string | number, { sum: number; n: number; K: number; series: Set<number>; best: { d: number; g: number } | null }>();
-    for (let i = 0; i < N; i++) {
-      if (!keep(i, mode)) continue;
-      const key = dataset ? t.s[i] : ds[t.s[i]];
-      const g = gap(i, mode);
-      const a = acc.get(key) ?? { sum: 0, n: 0, K: t.K[i], series: new Set<number>(), best: null };
-      a.sum += g; a.n += 1; a.series.add(t.s[i]);
-      if (!a.best || rank(g, mode) > rank(a.best.g, mode)) a.best = { d: t.d[i], g };
-      acc.set(key, a);
+    // One case per pair: x the local score, y the global one. Stitched mode, one case per series:
+    // x the best chosen detector's AutoVUS Global, y the stitched score's AutoVUS.
+    let cases: { s: number; d: number; K: number; x: number; y: number; g: number }[] = [];
+    if (mode === "stitched") {
+      const top1 = new Map<number, { d: number; a: number; K: number }>();
+      if (st) for (let i = 0; i < N; i++) {
+        if (!keep(i) || st.score[t.series[t.s[i]]] === undefined) continue;
+        const cur = top1.get(t.s[i]);
+        if (!cur || t.a[i] > cur.a) top1.set(t.s[i], { d: t.d[i], a: t.a[i], K: t.K[i] });
+      }
+      cases = [...top1.entries()].map(([s, x]) => ({ s, d: x.d, K: x.K, x: x.a, y: st!.score[t.series[s]], g: st!.score[t.series[s]] - x.a }));
+    } else for (let i = 0; i < N; i++) {
+      if (!keep(i)) continue;
+      const x = mode === "mean" ? t.m[i] : t.n[i];
+      cases.push({ s: t.s[i], d: t.d[i], K: t.K[i], x, y: t.a[i], g: t.a[i] - x });
     }
-    const rows = [...acc.entries()].map(([key, a]) => ({ key, mean: a.sum / a.n, K: a.K, nSeries: a.series.size, best: a.best }))
-      .sort((x, y) => rank(y.mean, mode) - rank(x.mean, mode));
-    const mx = Math.max(1e-9, ...rows.map((r) => Math.abs(r.mean)));
-    const top = (m: Mode) => {
-      const idx: number[] = [];
-      for (let i = 0; i < N; i++) if (keep(i, m)) idx.push(i);
-      return idx.sort((x, y) => rank(gap(y, m), m) - rank(gap(x, m), m)).slice(0, 5)
-        .map((i) => ({ file: t.series[t.s[i]], det: t.detectors[t.d[i]], g: gap(i, m) }));
-    };
-    return { rows, mx, tops: [{ m: "mean" as Mode, rows: top("mean") }, { m: "worst" as Mode, rows: top("worst") }] };
-  }, [t, ds, off, mode, dataset]);
+    cases.sort((p, q) => rank(q.g) - rank(p.g));
+    // A dataset row is the mean gap of its cases; a series row is its largest gap, so the first rows are the first cases.
+    // idx: the row's cases on the plot, every case of a dataset, the largest-gap one of a series.
+    const acc = new Map<string | number, { sum: number; n: number; K: number; series: Set<number>; best: { d: number; g: number }; idx: number[] }>();
+    cases.forEach((c, i) => {
+      const key = dataset ? c.s : ds[c.s];
+      const a = acc.get(key);
+      if (a) { a.sum += c.g; a.n += 1; a.series.add(c.s); if (!dataset) a.idx.push(i); }
+      else acc.set(key, { sum: c.g, n: 1, K: c.K, series: new Set([c.s]), best: { d: c.d, g: c.g }, idx: [i] });
+    });
+    const rows = [...acc.entries()].map(([key, a]) => ({ key, g: dataset ? a.best.g : a.sum / a.n, K: a.K, nSeries: a.series.size, best: a.best, idx: a.idx }))
+      .sort((x, y) => rank(y.g) - rank(x.g));
+    const mx = Math.max(1e-9, ...rows.map((r) => Math.abs(r.g)));
+    const top = cases.map((c) => ({ file: t.series[c.s], det: t.detectors[c.d], x: c.x, y: c.y, g: c.g, title: seriesName(t.series[c.s]), sub: t.detectors[c.d] }));
+    return { rows, mx, top };
+  }, [t, st, ds, off, mode, dataset]);
+
+  // "Show more" count, back to the first 20 when the case, the dataset or the detectors change.
+  const moreKey = `${mode}|${dataset ?? ""}|${off.join(",")}`;
+  const shown = more.key === moreKey ? more.n : STEP;
 
   const localHref = (file: string, det?: string) => href("/local", state, det ? { s: file, det } : { s: file });
 
   return (
     <>
       <aside className="rail" aria-label="Controls">
-        <h2 style={{ fontSize: 15, lineHeight: 1.3 }}>Global vs Local evaluation metric</h2>
         <div className="field">
-          <span>Compare AutoVUS to</span>
-          <div className="seg" role="group" aria-label="Compare AutoVUS to" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
-            <button type="button" aria-pressed={mode === "mean"} onClick={() => setMode("mean")} style={{ height: 34 }}>Mean per-anomaly AutoVUS</button>
-            <button type="button" aria-pressed={mode === "worst"} onClick={() => setMode("worst")} style={{ height: 34 }}>Lowest per-anomaly AutoVUS</button>
+          <span>Compare AutoVUS Global to</span>
+          <div className="seg" role="group" aria-label="Compare AutoVUS Global to" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+            <button type="button" aria-pressed={mode === "mean"} onClick={() => setMode("mean")} style={{ height: 34 }}>Mean AutoVUS Local</button>
+            <button type="button" aria-pressed={mode === "worst"} onClick={() => setMode("worst")} style={{ height: 34 }}>Lowest AutoVUS Local</button>
+            <button type="button" aria-pressed={mode === "stitched"} onClick={() => setMode("stitched")} style={{ height: 34 }}>Stitched score, best detector</button>
           </div>
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.4 }}>{GOAL[mode]}</p>
         </div>
         <div className="field">
           <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>Detectors
@@ -91,22 +127,30 @@ export function FinderView({ state }: { state: State }) {
       </aside>
 
       <main className="content" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: 20 }}>
-        <section className="panel" aria-label="Ranking" style={{ flex: "999 1 520px", minWidth: 0, overflowX: "auto" }}>
+        <div style={{ flex: "999 1 520px", minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
+        {view && (
+          <section className="panel" aria-label="Cases">
+            <GapScatter points={view.top} xlabel={AXES[mode].x} ylabel={AXES[mode].y} glabel={LABEL[mode]} mark={mark}
+              onPick={(i) => router.push(localHref(view.top[i].file, view.top[i].det))} />
+          </section>
+        )}
+        <section className="panel" aria-label="Ranking" style={{ minWidth: 0, overflowX: "auto" }}>
           <nav aria-label="Scope" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, paddingBottom: 8, borderBottom: "1px solid var(--border-soft)" }}>
             <button type="button" onClick={() => setDataset(null)} style={{ padding: 0, border: 0, background: "transparent", cursor: "pointer", fontSize: 14, fontWeight: 600, color: dataset ? "var(--accent)" : "var(--ink)" }}>All datasets</button>
             {dataset && (<><span className="muted" aria-hidden="true">›</span><span style={{ fontWeight: 600 }}>{dataset}</span></>)}
           </nav>
           {error && <span className="muted">No local tables. Run <code>conda run -n autovus python app/export_local.py</code>.</span>}
           {!view && !error && <div style={{ height: 400 }} />}
+          <div style={{ maxHeight: "max(240px, calc(100vh - 684px))", overflowY: "auto" }}>
           {view && !dataset && (
             <table className="table">
               <thead><tr><th>Dataset</th><th className="r">Time series</th><th style={{ width: 320 }}>{LABEL[mode]}</th></tr></thead>
               <tbody>
                 {view.rows.map((r) => (
-                  <tr key={String(r.key)} onClick={() => setDataset(String(r.key))}>
+                  <tr key={String(r.key)} onClick={() => { setMark([]); setDataset(String(r.key)); }} onMouseEnter={() => setMark(r.idx)} onMouseLeave={() => setMark([])}>
                     <td className="sans" style={{ fontWeight: 600 }}>{String(r.key)}</td>
                     <td className="r mono muted">{r.nSeries}</td>
-                    <td><Bar g={r.mean} mx={view.mx} /></td>
+                    <td><Bar g={r.g} mx={view.mx} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -114,30 +158,32 @@ export function FinderView({ state }: { state: State }) {
           )}
           {view && dataset && (
             <table className="table">
-              <thead><tr><th>Time series</th><th className="r">Anomalies</th><th style={{ width: 300 }}>{LABEL[mode]}</th><th>Detector with largest gap</th></tr></thead>
+              <thead><tr><th>Time series</th><th className="r">Anomalies</th><th style={{ width: 190, whiteSpace: "normal" }}>{LABEL[mode]}</th><th>{mode === "stitched" ? "Best detector" : "Detector"}</th></tr></thead>
               <tbody>
                 {view.rows.map((r) => {
                   const file = t!.series[Number(r.key)];
                   return (
-                    <tr key={String(r.key)}>
-                      <td className="mono"><Link href={localHref(file, r.best ? t!.detectors[r.best.d] : undefined)} style={{ textDecoration: "none" }}>{seriesName(file)}</Link></td>
+                    <tr key={String(r.key)} onClick={() => router.push(localHref(file, t!.detectors[r.best.d]))} onMouseEnter={() => setMark(r.idx)} onMouseLeave={() => setMark([])}>
+                      <td className="mono" style={{ maxWidth: 230, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Link href={localHref(file, t!.detectors[r.best.d])} title={seriesName(file)} style={{ textDecoration: "none" }}>{seriesName(file)}</Link></td>
                       <td className="r mono muted">{r.K}</td>
-                      <td><Bar g={r.mean} mx={view.mx} /></td>
-                      <td className="sans">{r.best ? t!.detectors[r.best.d] : "–"}</td>
+                      <td><Bar g={r.g} mx={view.mx} /></td>
+                      <td className="sans">{t!.detectors[r.best.d]}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           )}
+          </div>
         </section>
+        </div>
 
         <aside aria-label="Top pairs" style={{ flex: "1 1 300px", maxWidth: 380, minWidth: 260, display: "flex", flexDirection: "column", gap: 16 }}>
-          {view?.tops.map((tp) => (
-            <div key={tp.m} className="panel" style={{ gap: 0 }}>
-              <span className="eyebrow" style={{ marginBottom: 6 }}>Top 5 pairs: {LABEL[tp.m]}</span>
-              {tp.rows.map((p) => (
-                <Link key={p.file + p.det} href={localHref(p.file, p.det)} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 52px", gap: 8, alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--border-soft)", textDecoration: "none" }}>
+          {view && (
+            <div className="panel" style={{ gap: 0, maxHeight: "max(240px, calc(100vh - 162px))", overflowY: "auto" }}>
+              <span className="eyebrow" style={{ marginBottom: 6 }}>Top {Math.min(shown, view.top.length)} {mode === "stitched" ? "series" : "pairs"}: {LABEL[mode]}</span>
+              {view.top.slice(0, shown).map((p, i) => (
+                <Link key={p.file + p.det} href={localHref(p.file, p.det)} onMouseEnter={() => setMark([i])} onMouseLeave={() => setMark([])} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 52px", gap: 8, alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--border-soft)", textDecoration: "none" }}>
                   <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                     <span className="mono" style={{ fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{seriesName(p.file)}</span>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>{p.det}</span>
@@ -145,8 +191,11 @@ export function FinderView({ state }: { state: State }) {
                   <span className="mono" style={{ textAlign: "right", fontSize: 13 }}>{signed(p.g)}</span>
                 </Link>
               ))}
+              {view.top.length > shown && (
+                <button type="button" className="btn" style={{ marginTop: 8 }} onClick={() => setMore({ key: moreKey, n: shown + STEP })}>Show more</button>
+              )}
             </div>
-          ))}
+          )}
         </aside>
       </main>
     </>

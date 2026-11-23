@@ -9,7 +9,7 @@ import { LineChart } from "./LineChart";
 
 export const BEFORE = "var(--early)", AFTER = "var(--down)";
 
-export function Drawer({ curves, a, L }: { curves: CurvesDoc; a: Anomaly; L: number }) {
+export function Drawer({ curves, a, L, height = 150 }: { curves: CurvesDoc; a: Anomaly; L: number; height?: number }) {
   const z = curves.zoom;
   const bands: Band[] = [{ from: a.start - z.from, to: a.end + 1 - z.from, color: "var(--label)", opacity: 0.45 }];
   if (a.b_left > 0) bands.push({ from: a.start - a.b_left - z.from, to: a.start - z.from, color: BEFORE, opacity: 0.35 });
@@ -18,15 +18,15 @@ export function Drawer({ curves, a, L }: { curves: CurvesDoc; a: Anomaly; L: num
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(0, 5fr) minmax(0, 3fr)", gap: 16 }}>
       {before ? (
-        <LineChart x={curves.buffers} title={`before · ratio · b* = ${before.b}`} height={150}
+        <LineChart x={curves.buffers} title={`before · ratio · b* = ${before.b}`} height={height}
           lines={[{ y: before.rule_curve, color: BEFORE, width: 1.8 }]} mark={before.b} dot={{ line: 0, i: before.idx }} left="b = 0" right={String(L)} />
       ) : <span />}
       <figure style={{ margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
         <figcaption className="muted" style={{ fontSize: 12 }}>score · label · buffers · points {fmt(z.from)} to {fmt(z.to)}</figcaption>
-        <Lane lo={z.lo} hi={z.hi} bins={z.bins} n={z.to - z.from} height={150} ymin={0} ymax={1} bands={bands} />
+        <Lane lo={z.lo} hi={z.hi} bins={z.bins} n={z.to - z.from} height={height} ymin={0} ymax={1} bands={bands} />
       </figure>
       {after ? (
-        <LineChart x={curves.buffers} title={`after · ratio · b* = ${after.b}`} height={150}
+        <LineChart x={curves.buffers} title={`after · ratio · b* = ${after.b}`} height={height}
           lines={[{ y: after.rule_curve, color: AFTER, width: 1.8 }]} mark={after.b} dot={{ line: 0, i: after.idx }} left="b = 0" right={String(L)} />
       ) : <span />}
     </div>

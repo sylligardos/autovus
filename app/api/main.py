@@ -469,7 +469,7 @@ def notes_put(body: Notes):
 # The Local, Finder, Coverage, Buffers and Suspicious pages read the tables
 # app/export_local.py writes to app/data/<benchmark>/local/; the game scores
 # its rounds live.
-LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game', 'speed')
+LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game', 'speed', 'stitched')
 
 
 @lru_cache(maxsize=32)
@@ -491,6 +491,19 @@ def local_table(name: str, b: str = Query('tsb-ad')):
     if name not in LOCAL_TABLES:
         raise HTTPException(404, f'unknown table {name}')
     return local_file(b, name + '.json')
+
+
+@app.get('/local/profiles')
+def local_profiles_index(b: str = Query('tsb-ad')):
+    """The datasets of the Profiles page (app/export_profiles.py)."""
+    return local_file(b, 'profiles', 'index.json')
+
+
+@app.get('/local/profiles/{dataset}')
+def local_profiles(dataset: str, b: str = Query('tsb-ad')):
+    if not dataset.replace('-', '').replace('_', '').isalnum():
+        raise HTTPException(400, 'bad dataset name')
+    return local_file(b, 'profiles', dataset + '.json')
 
 
 @app.get('/local/series/{file}')
@@ -537,11 +550,14 @@ def draw_rounds(rounds, n):
 
 
 @app.get('/game/rounds')
-def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None)):
-    """The rounds of game.json; with n, a new draw of n of them on every call."""
-    path = os.path.join(DATA, b, 'local', 'game.json')
+def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None), set: str | None = Query(None)):
+    """The rounds of game.json; with n, a new draw of n of them on every call.
+    set=candidates reads game_candidates.json instead (rounds proposed for the pool, to review)."""
+    if set not in (None, 'candidates'):
+        raise HTTPException(400, 'unknown set')
+    path = os.path.join(DATA, b, 'local', 'game_candidates.json' if set else 'game.json')
     if not os.path.exists(path):
-        raise HTTPException(404, 'no game.json; run app/export_local.py')
+        raise HTTPException(404, 'no such game file; run app/export_local.py')
     with open(path) as f:
         g = json.load(f)
     out = []
@@ -561,7 +577,7 @@ import oracle as orc  # noqa: E402
 
 
 @lru_cache(maxsize=64)
-def stitched_oracle(benchmark, file, winners, norm='minmax'):
+def stitched_oracle(benchmark, file, winners, norm='median'):
     """Region k (midpoint split) takes winners[k]'s score on the common scale `norm` (oracle.NORMS)."""
     if norm not in orc.NORMS:
         raise HTTPException(400, f'unknown norm {norm}')
@@ -579,7 +595,7 @@ def stitched_oracle(benchmark, file, winners, norm='minmax'):
 
 
 @app.get('/local/oracle')
-def local_oracle(file: str, winners: str, b: str = Query('tsb-ad'), norm: str = Query('minmax'), bins: int = Query(2000),
+def local_oracle(file: str, winners: str, b: str = Query('tsb-ad'), norm: str = Query('median'), bins: int = Query(2000),
                  start: int = Query(0), end: int | None = Query(None)):
     score, out = stitched_oracle(b, file, tuple(winners.split(',')), norm)
     s, e = window(len(score), start, end)

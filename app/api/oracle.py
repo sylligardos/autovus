@@ -1,6 +1,7 @@
 """The stitched score: region k (midpoint split, FastVUS.regions) takes the
 score of anomaly k's winner (best local AutoVUS@20, tie to the detector best
-on the most anomalies), each piece min-max scaled to [0, 1], then scored.
+on the most anomalies), each piece shifted so its median is 0, clipped at 0
+and divided by its max, then scored.
 Used by the API (/local/oracle).
 """
 import os
@@ -13,13 +14,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, os.path.join(_ROOT, 'src'))
 from autovus import FastVUS, AutoVUS  # noqa: E402
 
-NORMS = {'minmax': 'region: piece scaled to [0, 1]',
-         'median': 'region: piece minus its median, clipped at 0, divided by its max'}
-
-
-def _scaled(x):
-    lo, hi = float(np.min(x)), float(np.max(x))
-    return (x - lo) / (hi - lo) if hi > lo else np.zeros_like(x)
+NORMS = {'median': 'region: piece minus its median, clipped at 0, divided by its max'}
 
 
 def _median_scaled(x):
@@ -42,7 +37,7 @@ def winners_from_local(M):
     return np.array([max(np.where(isbest[:, k])[0], key=lambda d: reach[d]) for k in range(M.shape[1])])
 
 
-def stitch(label, score_of, winners, norm='minmax'):
+def stitch(label, score_of, winners, norm='median'):
     """score_of(detector) -> full score; winners: one detector name per anomaly."""
     if norm not in NORMS:
         raise ValueError(f'unknown norm {norm}')
@@ -54,7 +49,7 @@ def stitch(label, score_of, winners, norm='minmax'):
     out = np.empty(T)
     for k, d in enumerate(winners):
         piece = np.asarray(score_of(d), dtype=float)[lo[k]:hi[k]]
-        out[lo[k]:hi[k]] = _scaled(piece) if norm == 'minmax' else _median_scaled(piece)
+        out[lo[k]:hi[k]] = _median_scaled(piece)
     return out
 
 

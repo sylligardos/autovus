@@ -21,9 +21,11 @@ Outputs (app/data/<benchmark>/local/):
                           mean buffer before and after
     odd.json              suspicious anomalies with a window around each
     game.json             the game's rounds (series, detector, anomaly); edit by hand
-    speed.json            the Intro speed box: total time of every (series, detector) under
-                          the original VUS, FastVUS, FastVUS-GPU and AutoVUS, and the mean
-                          per-pair ratio to the original VUS (the paper's runtime runs, L = 128)
+    stitched.json         per series: AutoVUS@20 of the stitched score (from scores20.json,
+                          app/export_rankings20.py)
+    speed.json            the Intro speed box: per measure (original VUS, FastVUS, FastVUS-GPU,
+                          AutoVUS) the box of the times per (series, detector), their total, and
+                          the mean per-pair ratio to the original VUS (the paper's runtime runs, L = 128)
 """
 import argparse
 import json
@@ -187,18 +189,37 @@ def speed_table(out):
         if base is None:
             base = t
         ratio = None if key == 'vus' else round(float((base / t.reindex(base.index)).mean()), 2)
-        rows.append({'key': key, 'label': label, 'tag': tag, 'seconds': round(float(t.sum()), 1), 'ratio': ratio})
+        # The box of the per-pair times: quartiles, whiskers at the last value within 1.5 IQR.
+        v = t.to_numpy(dtype=float)
+        q1, med, q3 = (float(x) for x in np.percentile(v, [25, 50, 75]))
+        lo, hi = float(v[v >= q1 - 1.5 * (q3 - q1)].min()), float(v[v <= q3 + 1.5 * (q3 - q1)].max())
+        rows.append({'key': key, 'label': label, 'tag': tag, 'seconds': round(float(t.sum()), 1), 'ratio': ratio,
+                     'box': [float(f'{x:.4g}') for x in (lo, q1, med, q3, hi)]})
     dump({'pairs': int(len(base)), 'series': int(base.index.get_level_values(0).nunique()), 'L': 128, 'rows': rows}, out / 'speed.json')
     print('speed:', ', '.join(f"{r['label']} {r['seconds']} s x{r['ratio']}" for r in rows))
+
+
+def stitched_table(out, benchmark):
+    """stitched.json: AutoVUS@20 of the stitched score per series, copied from the Rankings table."""
+    src = ROOT / 'app' / 'data' / benchmark / 'scores20.json'
+    if not src.exists():
+        print('stitched: no scores20.json, run app/export_rankings20.py')
+        return
+    with open(src) as f:
+        files = json.load(f)['files']
+    score = {name: round(float(rows['Stitched score']['autovus']), 3) for name, rows in files.items()
+             if 'autovus' in rows.get('Stitched score', {})}
+    dump({'L': 20, 'score': score}, out / 'stitched.json')
+    print(f'stitched: {len(score)} series')
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--benchmark', default='tsb-ad')
-    ap.add_argument('--only', nargs='*', default=None, help='local buffers odd game speed (default: all)')
+    ap.add_argument('--only', nargs='*', default=None, help='local buffers odd game speed stitched (default: all)')
     a = ap.parse_args()
     out = ROOT / 'app' / 'data' / a.benchmark / 'local'
-    parts = set(a.only or ['local', 'buffers', 'odd', 'game', 'speed'])
+    parts = set(a.only or ['local', 'buffers', 'odd', 'game', 'speed', 'stitched'])
     p = TSADParser()
     detectors = sorted(str(d) for d in p.get_detectors())
     if 'local' in parts:
@@ -213,6 +234,8 @@ def main():
         odd_table(out, p)
     if 'speed' in parts:
         speed_table(out)
+    if 'stitched' in parts:
+        stitched_table(out, a.benchmark)
     if 'game' in parts and not (out / 'game.json').exists():
         dump({'L': 20, 'sides': 'per_side', 'rounds': [{'file': f, 'detector': d, 'k': k} for f, d, k in GAME]}, out / 'game.json')
         print('game: first draft written')

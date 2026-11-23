@@ -3,6 +3,7 @@
 // how good can a set of detectors be, and how few are needed. Datasets,
 // then series; a series shows its best-coverage set, the best set of each
 // size, and the set's lanes. "Show in Local" opens the series with the set.
+// The second tab is the minimum set (MinimumSet.tsx).
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -11,6 +12,7 @@ import { href, type ScoreDoc, type SeriesDoc, type State } from "@/lib/model";
 import { SET_COLORS, bestSets, datasetOf, oracle, seriesName, type CoverTable, type Oracle } from "@/lib/local";
 import { useRemembered } from "@/lib/remember";
 import { Lane, type Band } from "./Lane";
+import { MinimumSet } from "./MinimumSet";
 
 const f2 = (v: number) => v.toFixed(2);
 
@@ -20,6 +22,7 @@ export function CoverageView({ state }: { state: State }) {
   const [error, setError] = useState(false);
   const [dataset, setDataset] = useRemembered<string | null>(`coverage:${b}:dataset`, null);
   const [series, setSeries] = useRemembered<number | null>(`coverage:${b}:series`, null);
+  const [tab, setTab] = useRemembered<"best" | "min">(`coverage:${b}:tab`, "best");
 
   useEffect(() => {
     let live = true;
@@ -34,6 +37,7 @@ export function CoverageView({ state }: { state: State }) {
     return { M, o: oracle(M) };
   }) : []), [t]);
   const oracleOf = (i: number) => per[i].o;
+  const Ms = useMemo(() => per.map((p) => p.M), [per]);
 
   const byDs = useMemo(() => {
     const m: Record<string, number[]> = {};
@@ -49,12 +53,18 @@ export function CoverageView({ state }: { state: State }) {
   };
 
   const crumbs = (
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
     <nav aria-label="Scope" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 14 }}>
       <button type="button" onClick={() => { setDataset(null); setSeries(null); }} style={{ padding: 0, border: 0, background: "transparent", cursor: "pointer", fontSize: 14, fontWeight: 600, color: dataset ? "var(--accent)" : "var(--ink)" }}>All datasets</button>
       {dataset && (<><span className="muted" aria-hidden="true">›</span>
         <button type="button" onClick={() => setSeries(null)} style={{ padding: 0, border: 0, background: "transparent", cursor: "pointer", fontSize: 14, fontWeight: 600, color: series !== null ? "var(--accent)" : "var(--ink)" }}>{dataset}</button></>)}
       {t && series !== null && (<><span className="muted" aria-hidden="true">›</span><span className="mono" style={{ fontSize: 13 }}>{seriesName(t.series[series])}</span></>)}
     </nav>
+    <div className="seg" role="group" aria-label="View" style={{ display: "flex" }}>
+      <button type="button" aria-pressed={tab === "best"} onClick={() => setTab("best")} style={{ padding: "0 14px" }}>Best coverage</button>
+      <button type="button" aria-pressed={tab === "min"} onClick={() => setTab("min")} style={{ padding: "0 14px" }}>Minimum set</button>
+    </div>
+    </div>
   );
 
   if (!t || !per.length) {
@@ -64,6 +74,8 @@ export function CoverageView({ state }: { state: State }) {
       </main>
     );
   }
+
+  if (tab === "min") return <main className="content">{crumbs}<MinimumSet state={state} t={t} Ms={Ms} dataset={dataset} series={series} setDataset={setDataset} setSeries={setSeries} /></main>;
 
   if (series !== null) return <main className="content">{crumbs}<SeriesCoverage state={state} t={t} i={series} M={per[series].M} o={per[series].o} /></main>;
 

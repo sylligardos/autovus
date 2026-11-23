@@ -1,5 +1,5 @@
 import { TopBar } from "@/components/TopBar";
-import { CoverageView } from "@/components/CoverageView";
+import { CoverageCurve } from "@/components/CoverageCurve";
 import { stateFrom } from "@/lib/model";
 
 export default async function Coverage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -7,7 +7,7 @@ export default async function Coverage({ searchParams }: { searchParams: Promise
   return (
     <>
       <TopBar state={state} current="/coverage" />
-      <div className="page"><CoverageView state={state} /></div>
+      <div className="page"><CoverageCurve state={state} /></div>
     </>
   );
 }

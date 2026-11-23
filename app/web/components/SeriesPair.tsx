@@ -9,7 +9,8 @@ import { loadScoreDoc, loadSeriesDoc } from "@/lib/api";
 import { f2, fmt, href, metricLabel, type MetricKey, type PairRow, type ScoreDoc, type SeriesDoc, type State } from "@/lib/model";
 import { Lane, type Band } from "./Lane";
 
-export function SeriesPair({ state, file, a, b, move, am, bm, rows }: { state: State; file: string; a: string; b: string; move: number; am: MetricKey; bm: MetricKey; rows: PairRow[] }) {
+export function SeriesPair({ state, file, a, b, move, am, bm, rows, show }: { state: State; file: string; a: string; b: string; move: number; am: MetricKey; bm: MetricKey; rows: PairRow[];
+  show?: (det: string) => string[] }) {   // the lines under a detector's name, when the caller's metrics are not row fields
   const [doc, setDoc] = useState<SeriesDoc | null>(null);
   const [lanes, setLanes] = useState<Record<string, ScoreDoc>>({});
   useEffect(() => {
@@ -35,7 +36,8 @@ export function SeriesPair({ state, file, a, b, move, am, bm, rows }: { state: S
           <div key={det} className="lane-row">
             <div className="lane-name">
               <span style={{ fontWeight: 600, color: det === b && move ? (move < 0 ? "var(--up)" : "var(--down)") : undefined }}>{det}</span>
-              {r ? <><span className="mono muted" style={{ fontSize: 11 }}>{metricLabel(am)} {f2(r[am])}</span><span className="mono muted" style={{ fontSize: 11 }}>{metricLabel(bm)} {f2(r[bm])}</span></> : <span className="mono muted" style={{ fontSize: 11 }}>…</span>}
+              {show ? show(det).map((t, i) => <span key={i} className="mono muted" style={{ fontSize: 11 }}>{t}</span>)
+                : r ? <><span className="mono muted" style={{ fontSize: 11 }}>{metricLabel(am)} {f2(r[am])}</span><span className="mono muted" style={{ fontSize: 11 }}>{metricLabel(bm)} {f2(r[bm])}</span></> : <span className="mono muted" style={{ fontSize: 11 }}>…</span>}
             </div>
             {l ? <Lane lo={l.lo} hi={l.hi} bins={l.bins} n={l.n} ymin={0} ymax={1} bands={labels} /> : <div style={{ height: 56, background: "var(--subtle)", borderRadius: 4 }} />}
           </div>
@@ -43,7 +45,7 @@ export function SeriesPair({ state, file, a, b, move, am, bm, rows }: { state: S
       })}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span className="muted" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}><span className="swatch" style={{ width: 10, height: 8, background: "var(--label)" }} />labelled anomaly</span>
-        <Link href={href("/local", state, { s: file, det: Array.from(new Set([a, b])).join(",") })} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Open in Review with both pinned</Link>
+        <Link href={href("/local", state, { s: file, det: Array.from(new Set([a, b])).join(",") })} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Open in Explore with both pinned</Link>
       </div>
     </section>
   );
