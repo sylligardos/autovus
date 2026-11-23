@@ -220,3 +220,6 @@ src/notebooks/experimental_results.ipynb
 app/data/tsb-ad/local/game_draft5.json
 app/data/tsb-ad/local/game_kept18.json
 app/data/tsb-ad/local/game_picked6.json
+
+# The web app's own source folder. The Python rule "lib/" above would hide it.
+!app/web/lib/
