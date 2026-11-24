@@ -26,6 +26,7 @@ from .adjustedvus import AdjustedVUS
 class AutoVUS:
     RULES = ('paper', 'ratio')
     SIDES = ('symmetric', 'per_side')
+    TIE_TOL = 1e-9      # rule values this close to the maximum are ties, see first_argmax
 
     def __init__(self, engine, rule='paper', sides='symmetric', dust_floor=1e-6, min_signal_frac=1e-3):
         """
@@ -81,14 +82,27 @@ class AutoVUS:
             return (A - A[0] + 1.0) / np.clip(g - g[0] + 1.0, 1e-10, None)
         return A / np.clip(g, 1e-10, None)
 
+    @classmethod
+    def first_argmax(cls, ratio):
+        """Index of the first value within TIE_TOL of the maximum.
+
+        Buffers that add nothing have the same rule value: past the end of
+        the selection window the buffered label stops changing, so the rule
+        curve is flat. decumulate() rebuilds those equal values with a
+        rounding error of about 1e-15, and a plain argmax would pick the
+        buffer where the error happens to be largest.
+        """
+        ratio = np.asarray(ratio, dtype=float)
+        return int(np.argmax(ratio >= ratio.max() - cls.TIE_TOL))
+
     def select_buffer(self, vus, random, no_signal=False):
         """b* from the cumulative curves of the detector and of a random detector.
 
-        b* is the first argmax of the rule curve (0 when no_signal, see min_signal_frac). core_ratio = vus[0] / random[0]
+        b* is the first argmax of the rule curve, ties included (first_argmax; 0 when no_signal, see min_signal_frac). core_ratio = vus[0] / random[0]
         says whether the anomaly is detected inside its own interval at all.
         """
         ratio = self.rule_curve(vus, random)
-        idx = 0 if no_signal else int(np.argmax(ratio))
+        idx = 0 if no_signal else self.first_argmax(ratio)
         return {
             'buffer_idx': idx,
             'buffer_val': int(self.buffers[idx]),
@@ -218,7 +232,7 @@ class AutoVUS:
             if selection['buffer_idx'] == 0:              # 0 at L (or no signal) is 0 at every L'
                 return np.zeros(n, dtype=int)
             ratio = selection['ratio_curve']
-            return buffers[[int(np.argmax(ratio[:i + 1])) for i in range(n)]]
+            return buffers[[self.first_argmax(ratio[:i + 1]) for i in range(n)]]
 
         bstar_left = np.array([running(a['left']) for a in anomalies])
         bstar_right = bstar_left if self.sides == 'symmetric' else np.array([running(a['right']) for a in anomalies])
