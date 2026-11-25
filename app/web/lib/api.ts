@@ -9,7 +9,9 @@ const base = () => (typeof window === "undefined" ? API_URL : "/api/py");
 
 async function get<T>(path: string): Promise<T | null> {
   try {
-    const r = await fetch(`${base()}${path}`, { cache: "no-store" });
+    let r = await fetch(`${base()}${path}`, { cache: "no-store" });
+    // 410: the Python side no longer holds your data. Send the file again, once for all waiting requests, and retry.
+    if (r.status === 410 && own && (await sendAgain())) r = await fetch(`${base()}${path}`, { cache: "no-store" });
     if (!r.ok) return null;
     return (await r.json()) as T;
   } catch {
@@ -32,17 +34,32 @@ export const loadToy = (c: string, L: number) => get<ToyDoc>(`/toy?${q({ case: c
 export const loadTime = (b: string, file: string, detector: string, L: number, metrics: string, repeats = 3) =>
   get<TimeDoc>(`/time?${q({ b, file, detector, L, metrics, repeats })}`);
 
-export async function upload(label: File, score: File): Promise<{ id: string; file: string; n: number; anomalies: number; name: string } | { error: string }> {
+// Your own data on the Explore page: one CSV (the series, the label, one column per detector). The Python
+// side keeps it in memory under the hash of its content and may forget it; this tab keeps the file and
+// sends it again when that happens, so nothing has to survive on the other side between two requests.
+export type OwnDoc = { file: string; name: string; n: number; anomalies: number; detectors: string[] };
+let own: { csv: File; doc: OwnDoc } | null = null;
+let again: Promise<boolean> | null = null;
+export const ownDoc = () => own?.doc ?? null;
+async function register(csv: File): Promise<OwnDoc | { error: string }> {
   const fd = new FormData();
-  fd.append("label", label);
-  fd.append("score", score);
+  fd.append("file", csv);
   try {
-    const r = await fetch(`${base()}/upload`, { method: "POST", body: fd });
+    const r = await fetch(`${base()}/own`, { method: "POST", body: fd });
     const j = await r.json();
-    return r.ok ? j : { error: j.detail ?? "upload failed" };
+    return r.ok ? j : { error: typeof j.detail === "string" ? j.detail : "the upload failed" };
   } catch {
     return { error: "the Python side is not running" };
   }
+}
+export async function uploadOwn(csv: File) {
+  const d = await register(csv);
+  if (!("error" in d)) own = { csv, doc: d };
+  return d;
+}
+function sendAgain() {
+  again ??= register(own!.csv).then((d) => !("error" in d)).finally(() => { again = null; });
+  return again;
 }
 
 export type Notes = Record<string, { note: string; updated: string }>;

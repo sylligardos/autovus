@@ -15,7 +15,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
   const speed = await loadLocalTable<SpeedTable>(state.benchmark, "speed");
   // The four pages in the order of the top bar, each with the question on top of its page. The game is the button under the headline.
   const cards = [
-    { n: "01", q: "How well does each detector find every anomaly of a series?", title: "Explore", cta: "Open a series", to: href("/local", state) },
+    { n: "01", q: "How well does each detector find every anomaly of a series?", title: "Explore", cta: "Open a series or upload your own", to: href("/local", state) },
     { n: "02", q: "Where do a series and its anomalies disagree?", title: "Cases", cta: "Find a case", to: href("/cases", state) },
     { n: "03", q: "Which detectors change rank when the metric changes?", title: "Rankings", cta: "AUC-PR to AutoVUS", to: href("/rankings", state) },
     { n: "04", q: "Which kinds of anomalies does a dataset hold, and which detectors cover them?", title: "Profiles", cta: "Open the profiles", to: href("/profiles", state) },
@@ -61,7 +61,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
           ))}
         </section>
         {summary && <Toy L={state.L} />}
-        {speed && <SpeedBox state={state} speed={speed} />}
+        {speed && <SpeedBox speed={speed} />}
         <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }} aria-label="Vocabulary">
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">VUS</span><span className="muted" style={{ fontSize: 13 }}>The volume under the surface of the PR or ROC curve over every buffer from 0 to L. One buffer grid for every anomaly of the series.</span></div>
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">FastVUS, the engine</span><span className="muted" style={{ fontSize: 13 }}>The same volume, computed once for all buffers at once. Exact on the CPU. On the GPU every term is exact except the existence term, which is approximated.</span></div>

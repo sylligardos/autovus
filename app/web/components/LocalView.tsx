@@ -5,7 +5,7 @@
 // step out, double click for all.
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { loadAucPr, loadCurves, loadLocalSeries, loadOracle, loadScoreDoc, loadSelect, loadSeriesDoc, type OracleDoc, type OracleNorm } from "@/lib/api";
+import { loadAucPr, loadCurves, loadLocalSeries, loadOracle, loadScoreDoc, loadSelect, loadSeriesDoc, ownDoc, uploadOwn, type OracleDoc, type OracleNorm, type OwnDoc } from "@/lib/api";
 import { TYPE_COLOR, f2, fmt, type Anomaly, type CurvesDoc, type ScoreDoc, type SeriesDoc, type SeriesMeta, type State } from "@/lib/model";
 import { GRADIENT_CSS, MAX_SCORED, chipColors, gradient, oracle, seriesName, spreadMarkers, type LocalSeries } from "@/lib/local";
 import { useRemembered } from "@/lib/remember";
@@ -20,6 +20,7 @@ const SORT_KEY = { ap: "ap", vus: "vv", auto: "gv", local: "lv" } as const;
 const COLS = "150px minmax(0, 1fr) 56px 56px 64px 56px";
 const NORMS: [OracleNorm, string][] = [["median", "Stitched score"]];
 type Oracles = Partial<Record<OracleNorm, OracleDoc>>;
+const OWN = "__own";                               // the dataset of the uploaded series
 const GAP = 4;                                     // percent between two anomaly markers
 
 export function LocalView({ state, seriesByDataset, initialFile, initialDet, initialView, initialPick = null, initialMode = null }: {
@@ -32,8 +33,22 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
   const datasets = Object.keys(seriesByDataset);
   const k = `local:${b}:`;
   const firstFile = seriesByDataset.YAHOO?.find((s) => s.file.startsWith("682_"))?.file ?? seriesByDataset[datasets[0]]?.[0]?.file ?? "";
-  const [file, setFile] = useRemembered(k + "file", firstFile, initialFile);
-  const dataset = useMemo(() => datasets.find((d) => seriesByDataset[d].some((s) => s.file === file)) ?? datasets[0], [datasets, seriesByDataset, file]);
+  // Your own data (one CSV, scored live) is a series like the others, under the dataset "Your data".
+  // After a reload the tab no longer has the file, so a link to it falls back to the first series.
+  const [own, setOwn] = useState<OwnDoc | null>(ownDoc);
+  const [upl, setUpl] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  const known = (f: string | null) => (f && f.startsWith("upload:") && ownDoc()?.file !== f ? null : f);
+  const [kept, setFile] = useRemembered(k + "file", firstFile, known(initialFile));
+  const file = known(kept) ?? firstFile;
+  const isOwn = file.startsWith("upload:");
+  const dataset = useMemo(() => (isOwn ? OWN : datasets.find((d) => seriesByDataset[d].some((s) => s.file === file)) ?? datasets[0]), [datasets, seriesByDataset, file, isOwn]);
+  const choose = async (csv: File | undefined) => {
+    if (!csv) return;
+    setUpl({ busy: true, error: null });
+    const d = await uploadOwn(csv);
+    if ("error" in d) { setUpl({ busy: false, error: d.error }); return; }
+    setUpl({ busy: false, error: null }); setOwn(d); setPins([]); setDeep(false); setFile(d.file);
+  };
   const [tab, setTab] = useRemembered<"scores" | "map">(k + "tab", "scores");
   const [mode, setMode] = useRemembered<Mode>(k + "mode", "top", initialMode);
   const [keptK, setTopK] = useRemembered(k + "top", 5);
@@ -221,16 +236,27 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
   return (
     <div style={{ width: "100%", maxWidth: 1600, margin: "0 auto", padding: "16px 24px 40px", display: "flex", flexDirection: "column", gap: 12 }}>
       <div className="panel" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "10px 14px" }} aria-label="Series">
-        <select className="select" aria-label="Dataset" value={dataset} onChange={(e) => setFile(seriesByDataset[e.target.value][0].file)} style={{ height: 32 }}>
+        <label className="btn btn-primary" title="One CSV file with a header row. Columns: the series, the label (0 or 1), then one score column per detector. At most 4 MB."
+          style={{ display: "inline-flex", alignItems: "center", gap: 7, cursor: upl.busy ? "progress" : "pointer" }}>
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 9V1.5M2.8 4.5 6 1.5l3.2 3M1.5 10.5h9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          {upl.busy ? "Scoring…" : "Upload your data"}
+          <input type="file" accept=".csv,.txt,text/csv" disabled={upl.busy} onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ""; }} style={{ display: "none" }} />
+        </label>
+        <span className="mono muted" style={{ fontSize: 11 }}>CSV · series, label, one column per detector</span>
+        <span aria-hidden="true" style={{ width: 1, height: 22, background: "var(--border)" }} />
+        <select className="select" aria-label="Dataset" value={dataset} onChange={(e) => setFile(e.target.value === OWN ? own!.file : seriesByDataset[e.target.value][0].file)} style={{ height: 32 }}>
+          {own && <option value={OWN}>Your data</option>}
           {datasets.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
         <select className="select mono" aria-label="Series" value={file} onChange={(e) => setFile(e.target.value)} style={{ height: 32, fontSize: 12, flex: "0 1 420px", minWidth: 0 }}>
-          {(seriesByDataset[dataset] ?? []).map((s) => <option key={s.file} value={s.file}>{seriesName(s.file)}</option>)}
+          {isOwn ? <option value={file}>{own?.name ?? "your data"}</option>
+            : (seriesByDataset[dataset] ?? []).map((s) => <option key={s.file} value={s.file}>{seriesName(s.file)}</option>)}
         </select>
-        <button type="button" className="btn" onClick={() => step(-1)}>Prev</button>
-        <button type="button" className="btn" onClick={() => step(1)}>Next</button>
-        <button type="button" className="btn btn-primary" onClick={sample}>Sample</button>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}><NotesButton file={file} name={seriesName(file)} onOpen={setFile} /></span>
+        <button type="button" className="btn" disabled={isOwn} onClick={() => step(-1)}>Prev</button>
+        <button type="button" className="btn" disabled={isOwn} onClick={() => step(1)}>Next</button>
+        <button type="button" className="btn" onClick={sample}>Sample</button>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>{!isOwn && <NotesButton file={file} name={seriesName(file)} onOpen={setFile} />}</span>
+        {upl.error && <span role="alert" style={{ flex: "0 0 100%", color: "var(--late)", fontSize: 12 }}>Upload not read, {upl.error}.</span>}
       </div>
 
       <section className="panel" aria-label="Series and detectors" style={{ padding: 0, overflowX: "auto", gap: 0 }}>

@@ -2,20 +2,21 @@
 The Python side of the AutoVUS demo: FastAPI on localhost.
 
 The web app (app/web) reads the benchmark through it and computes live:
-buffer selection on the Series page, the toy cases on the Intro, timings
-and uploads on the Speed page. The tables the Rankings, Cases and Speed
+buffer selection and your own data on the Explore page, the toy cases on
+the Intro, the game. The tables the Rankings, Cases and Speed
 pages read come from app/export.py and live under app/data/<benchmark>/.
 
 Run from the repo root:
     conda run -n autovus uvicorn main:app --app-dir app/api --port 8765 --reload
 """
+import hashlib
 import io
 import json
 import os
 import random
 import sys
 import time
-import uuid
+from collections import OrderedDict
 from functools import lru_cache
 
 import numpy as np
@@ -44,7 +45,9 @@ app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], all
 
 BENCHMARKS = {'tsb-ad': {'label': 'TSB-AD'}}
 _parsers = {}
-UPLOADS = {}                     # id -> {'label', 'score', 'name', 'n'}
+UPLOADS = OrderedDict()          # your own data (POST /own): content hash -> {'label', 'values', 'scores', 'detectors', 'name'}
+MAX_UPLOADS = 8                  # the last ones only; the page sends its file again when it is gone (410)
+MAX_OWN = 4 * 1024 * 1024        # bytes of one uploaded file
 ORACLE_DELAY = 64                # the delayed oracle reference: label shifted later by this many points
 REFERENCES = ('Delayed oracle', 'Random')
 SIDES = 'per_side'               # AutoVUS of the live pages: 'per_side' or 'symmetric' (the paper's)
@@ -85,16 +88,18 @@ def reference_score(name, label, seed=0):
 @lru_cache(maxsize=64)
 def load_pair(benchmark, file, detector):
     """label, score (float64, same length) and the series values."""
+    own = None
     if file.startswith('upload:'):
-        u = UPLOADS.get(file[7:])
-        if u is None:
-            raise HTTPException(404, 'upload expired')
-        return u['label'], u['score'], u.get('values')
-    p = parser(benchmark)
-    try:
-        values, label = load_series(p, file)
-    except FileNotFoundError:
-        raise HTTPException(404, f'unknown series {file}')
+        own = UPLOADS.get(file[7:])
+        if own is None:
+            raise HTTPException(410, 'upload expired')              # the page sends the file again and retries
+        values, label = own['values'], own['label']
+    else:
+        p = parser(benchmark)
+        try:
+            values, label = load_series(p, file)
+        except FileNotFoundError:
+            raise HTTPException(404, f'unknown series {file}')
     if detector.startswith('stitched:'):                    # 'stitched:<norm>:<winner of A1>,<winner of A2>,...'
         _, norm, winners = detector.split(':', 2)
         if norm not in orc.NORMS:
@@ -103,8 +108,12 @@ def load_pair(benchmark, file, detector):
             score = orc.stitch(label, lambda d: load_pair(benchmark, file, d)[1], winners.split(','), norm)
         except ValueError as e:
             raise HTTPException(400, str(e))
+    elif own is not None and detector in own['scores']:
+        score = own['scores'][detector]
     elif detector in REFERENCES:
         score = reference_score(detector, label)
+    elif own is not None:
+        raise HTTPException(404, f'no score for {detector} in the uploaded file')
     else:
         score = load_score(p, file, detector)
         if score is None:
@@ -418,42 +427,78 @@ def time_metrics(file: str, detector: str, b: str = Query('tsb-ad'), L: int = Qu
     return out
 
 
-def _read_column(data: bytes):
-    text = data.decode('utf-8', errors='ignore')
-    try:
-        arr = np.load(io.BytesIO(data), allow_pickle=False)
-        return np.asarray(arr, dtype=float).ravel()
-    except Exception:  # noqa: BLE001
-        pass
-    rows = [r.strip() for r in text.replace(';', ',').splitlines() if r.strip()]
-    vals = []
-    for i, r in enumerate(rows):
-        cell = r.split(',')[-1]
+def read_own(data: bytes):
+    """One uploaded CSV: the series, the label (0 or 1), then one column per detector. Returns
+    label (int), values, {detector: score}. A first row that is not numbers names the columns."""
+    if len(data) > MAX_OWN:
+        raise HTTPException(413, 'the file is larger than 4 MB')
+    text = data.decode('utf-8-sig', errors='ignore')
+    first = text.lstrip().split('\n', 1)[0]
+    sep = next((c for c in (',', ';', '\t') if c in first), ',')
+    cells = [c.strip().strip('"') for c in first.split(sep)]
+
+    def number(c):
         try:
-            vals.append(float(cell))
+            float(c)
+            return True
         except ValueError:
-            if i == 0:
-                continue                                        # a header row
-            raise HTTPException(400, f'row {i + 1} is not a number: {cell[:20]!r}')   # skipping it would shift the score against the label
-    arr = np.asarray(vals, dtype=float)
+            return False
+    header = not all(number(c) for c in cells)
+    try:
+        arr = np.loadtxt(io.StringIO(text), delimiter=sep, skiprows=int(header), ndmin=2, dtype=float)
+    except ValueError as e:
+        why = str(e).split(' at row')[0].split(';')[0]              # numpy counts rows without the header, so the row is left out
+        known = why.startswith(('could not convert', 'the number of columns changed'))
+        raise HTTPException(400, f'the file does not read as numbers, {why}' if known else 'the file does not read as a table of numbers')
+    if arr.shape[1] < 3:
+        raise HTTPException(400, 'the file needs at least three columns, the series, the label and one detector')
+    if arr.shape[0] < 10:
+        raise HTTPException(400, 'the file needs at least 10 rows')
     if not np.all(np.isfinite(arr)):
         raise HTTPException(400, 'the file holds NaN or infinite values')
-    return arr
+    lab = arr[:, 1]
+    if not np.all((lab == 0) | (lab == 1)):
+        raise HTTPException(400, 'the second column must be the label, 0 or 1')
+    if lab.sum() == 0 or lab.sum() == len(lab):
+        raise HTTPException(400, 'the label needs both normal points and anomalies')
+    names = []
+    for k in range(arr.shape[1] - 2):                              # names go into URLs and comma lists
+        raw = cells[k + 2] if header and k + 2 < len(cells) else ''
+        name = ' '.join(raw.replace(',', ' ').replace(':', ' ').split())[:40] or f'Detector {k + 1}'
+        while name in names or name in REFERENCES:
+            name += ' 2'
+        names.append(name)
+    return lab.astype(int), arr[:, 0].copy(), {d: arr[:, k + 2].copy() for k, d in enumerate(names)}
 
 
-@app.post('/upload')
-async def upload(label: UploadFile = File(...), score: UploadFile = File(...)):
-    lab = _read_column(await label.read())
-    sco = _read_column(await score.read())
-    n = min(len(lab), len(sco))
-    if n < 10:
-        raise HTTPException(400, 'could not read two columns of numbers')
-    lab = (lab[:n] > 0.5).astype(int)
-    if lab.sum() == 0:
-        raise HTTPException(400, 'the label has no anomaly')
-    uid = uuid.uuid4().hex[:12]
-    UPLOADS[uid] = {'label': lab, 'score': sco[:n], 'values': sco[:n], 'name': score.filename, 'n': n}
-    return {'id': uid, 'file': f'upload:{uid}', 'n': n, 'anomalies': len(runs(lab)), 'name': score.filename}
+@app.post('/own')
+async def own_upload(file: UploadFile = File(...)):
+    """Your own data, on the Explore page: one CSV, kept in memory under the hash of its content.
+    The page keeps the file and sends it again whenever this side has forgotten it (410), so
+    nothing here has to survive between two requests."""
+    data = await file.read()
+    uid = hashlib.sha1(data).hexdigest()[:16]
+    if uid not in UPLOADS:
+        label, values, scores = read_own(data)
+        UPLOADS[uid] = {'label': label, 'values': values, 'scores': scores, 'detectors': list(scores), 'name': file.filename or 'your data'}
+        while len(UPLOADS) > MAX_UPLOADS:
+            UPLOADS.popitem(last=False)
+    u = UPLOADS[uid]
+    UPLOADS.move_to_end(uid)
+    return {'file': f'upload:{uid}', 'name': u['name'], 'n': int(len(u['label'])), 'anomalies': len(runs(u['label'])), 'detectors': u['detectors']}
+
+
+@lru_cache(maxsize=16)
+def own_table(file, L):
+    """The table Explore reads for a benchmark series (app/export_gear.py), computed live for an upload."""
+    u = UPLOADS.get(file[7:])
+    if u is None:
+        raise HTTPException(410, 'upload expired')
+    rows = [orc.evaluate(u['label'], u['scores'][d], L) for d in u['detectors']]
+    return {'file': file, 'L': L, 'anomalies': runs(u['label']), 'detectors': u['detectors'],
+            'auto': [[round(float(x), 4) + 0.0 for x in m['auto']] for m in rows], 'autoG': [round(m['autoG'], 3) for m in rows],
+            'vusG': [[round(float(x), 3) for x in m['vusG']] for m in rows],
+            'aucpr': {d: round(m['aucpr'], 3) for d, m in zip(u['detectors'], rows)}}
 
 
 # ---------------------------------------------------------------- endpoints: notes
@@ -532,10 +577,13 @@ def local_profiles(dataset: str, b: str = Query('tsb-ad'), L: int = Query(20)):
 def local_series(file: str, b: str = Query('tsb-ad'), L: int = Query(20)):
     if '/' in file or file.startswith('.'):
         raise HTTPException(400, 'bad file name')
+    if file.startswith('upload:'):
+        gear(L)
+        return {k: v for k, v in own_table(file, L).items() if k != 'aucpr'}
     return local_file(b, 'series', file + '.json', folder=gear(L))
 
 
-# The game pool is 43 rounds per gear; both caches hold every round of both gears, so a new draw recomputes nothing.
+# The game pool is 45 rounds at L=20 (game.json) and 41 at L=128 (game_128.json); both caches hold every round of both gears, so a new draw recomputes nothing.
 @lru_cache(maxsize=256)
 def game_select(benchmark, file, detector, L):
     """AutoVUS (per side) on one series: its anomalies with their buffers, its value and the time it took.
@@ -589,10 +637,12 @@ def draw_rounds(rounds, n):
 @app.get('/game/rounds')
 def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None), set: str | None = Query(None), L: int | None = Query(None)):
     """The rounds of game.json, scored at L (default: the L of the file); with n, a new draw of n of them on every call.
+    A gear with its own pool reads game_<L>.json (the lags of the L=20 rounds are too small to see in an L=128 window).
     set=candidates reads game_candidates.json instead (rounds proposed for the pool, to review)."""
     if set not in (None, 'candidates'):
         raise HTTPException(400, 'unknown set')
-    path = os.path.join(DATA, b, 'local', 'game_candidates.json' if set else 'game.json')
+    own = os.path.join(DATA, b, 'local', f'game_{L}.json')
+    path = os.path.join(DATA, b, 'local', 'game_candidates.json') if set else own if os.path.exists(own) else os.path.join(DATA, b, 'local', 'game.json')
     if not os.path.exists(path):
         raise HTTPException(404, 'no such game file; run app/export_local.py')
     with open(path) as f:
@@ -761,5 +811,7 @@ def _scores_table(benchmark):
 @app.get('/local/aucpr/{file}')
 def local_aucpr(file: str, b: str = Query('tsb-ad')):
     """AUC-PR of every detector on the series (from scores.json, app/export.py)."""
+    if file.startswith('upload:'):
+        return own_table(file, 20)['aucpr']                       # AUC-PR does not depend on L
     row = _scores_table(b)['files'].get(file, {})
     return {d: v.get('auc_pr') for d, v in row.items()}

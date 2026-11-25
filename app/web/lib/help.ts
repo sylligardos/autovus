@@ -50,6 +50,7 @@ export const HELP: Record<string, HelpSection[]> = {
   "/local": [{
     title: "Explore",
     entries: [
+      { term: "Your data", text: "One CSV file with a header row. The first column is the series, the second the label (0 or 1), and every further column is the score of one detector, named by the header. At most 4 MB. It is scored live at the L of the top bar and is not kept." },
       { term: "AutoVUS Local", text: "AutoVUS of one anomaly: its own buffers, and a fair share (one over the number of anomalies) of the series' false alarms. Chance-adjusted, so a random score sits near 0." },
       { term: "Scores", text: "One lane per detector, time aligned with the series; the number above each anomaly is the detector's AutoVUS Local there." },
       { term: "Heat map", text: "The same numbers as cells, one column per anomaly in view. With more than 20 anomalies in view, each row becomes one colour band along time." },
