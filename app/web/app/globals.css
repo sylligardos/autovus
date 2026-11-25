@@ -184,7 +184,7 @@ h1, h2, h3 { margin: 0; }
 .chip-btn[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 
 /* intro cards */
-.card { display: flex; flex-direction: column; gap: 8px; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; text-decoration: none; color: var(--ink); min-height: 170px; }
+.card { display: flex; flex-direction: column; gap: 8px; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; text-decoration: none; color: var(--ink); min-height: 112px; }
 .card:hover { border-color: var(--accent); color: var(--ink); }
 input[type="range"] { accent-color: var(--accent); }
 input[type="checkbox"] { accent-color: var(--accent); }
