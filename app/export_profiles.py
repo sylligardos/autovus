@@ -126,7 +126,7 @@ def write(obj, path):
 
 
 def export(benchmark, dataset, local, runtime):
-    X, series, k, names, detectors, dropped, left_out = load(benchmark, dataset)
+    X, series, k, names, detectors, dropped, left_out = load(benchmark, dataset, local.name)
     n = len(X)
     used = sorted(set(series.tolist()))
     at = {s: i for i, s in enumerate(used)}
@@ -155,8 +155,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--benchmark', default='tsb-ad')
     ap.add_argument('--dataset', default=None)
+    ap.add_argument('--L', type=int, default=None, choices=(20, 128),
+                    help='a gear: read app/data/<benchmark>/L<L>/ (app/export_gear.py) and write its profiles/ there')
     a = ap.parse_args()
-    local = ROOT / 'app' / 'data' / a.benchmark / 'local'
+    local = ROOT / 'app' / 'data' / a.benchmark / (f'L{a.L}' if a.L else 'local')
     index_path = local / 'profiles' / 'index.json'
     runtime = pd.concat([pd.read_csv(f) for f in sorted(TSADParser().runtime_path.glob('*.csv'))], ignore_index=True)
     if a.dataset:

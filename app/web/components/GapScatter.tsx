@@ -80,11 +80,13 @@ export function GapScatter({ points, xlabel, ylabel, glabel, mark, onPick, far: 
     ctx.strokeStyle = c.muted; ctx.beginPath(); ctx.moveTo(sx(lo), sy(lo)); ctx.lineTo(sx(1), sy(1)); ctx.stroke();
     // Far cases last, so they sit on top.
     const order = points.map((_, i) => i).sort((a, b) => Math.abs(points[a].g) - Math.abs(points[b].g));
+    // A plot of a few hundred cases draws them larger and solid; thousands stay small, faint near the diagonal.
+    const few = points.length <= 1000, r0 = few ? 3.5 : 2, a0 = few ? 0.7 : 0.25;
     for (const i of order) {
       const p = points[i], t = Math.min(Math.abs(p.g) / FAR, 1);
       const [r, g, b] = mix(c.mid, p.g >= 0 ? c.above : c.below, t);
-      ctx.fillStyle = `rgba(${r},${g},${b},${0.25 + 0.75 * t})`;
-      ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 2 + t, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = `rgba(${r},${g},${b},${a0 + (1 - a0) * t})`;
+      ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), r0 + t, 0, 2 * Math.PI); ctx.fill();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points, W, lo, theme, xlabel, ylabel, FAR, above]);

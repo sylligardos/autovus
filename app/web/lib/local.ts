@@ -1,6 +1,6 @@
 // Types and helpers shared by the local-evaluation pages: Local, Finder,
 // Coverage, Buffers, Suspicious and the game. The numbers are the per-anomaly
-// AutoVUS (chance-adjusted local VUS-PR at L = 20, variant C) of app/export_local.py.
+// AutoVUS (chance-adjusted local VUS-PR at the gear L, per-side buffers, variant C) of app/export_gear.py.
 
 import type { DetectionType } from "./model";
 
@@ -19,7 +19,9 @@ export type OddItem = {
 export type OddTable = { q: number; gap: number; tested: Record<string, { series: number; anomalies: number }>; items: OddItem[] };
 export type GameRound = {
   file: string; detector: string; k: number; L: number; lo: number; hi: number; start: number; end: number;
-  b_left: number; b_right: number; type: DetectionType; seconds: number; values: number[]; score: number[];
+  b_left: number; b_right: number; type: DetectionType; seconds: number; autovus?: number; values: number[]; score: number[];
+  gain_left: number[]; gain_right: number[];       // the gain at every buffer 0..L per side; b_left / b_right are their first argmax
+  labels: [number, number][];                      // every label of the window, [start, end] inclusive
 };
 // Profiles (app/export_profiles.py): the anomalies of one dataset, their scores (x100) and the groupings.
 export type ProfileGraph = { label: string; pos: [number, number][]; edges: [number, number, number][]; group: number[]; counts: number[]; stability: number };
@@ -35,6 +37,11 @@ export type ProfilesTable = {
   }[] };
 };
 export type GameDoc = { L: number; pool?: number; rounds: GameRound[] };
+// The Draw mode (POST /draw): the buffers AutoVUS picks on a painted score; the two values are null while nothing is painted.
+export type DrawDoc = {
+  seconds: number; autovus: number | null; vus_full: number | null;
+  anomalies: { k: number; start: number; end: number; b_left: number; b_right: number; type: DetectionType }[];
+};
 
 export const datasetOf = (file: string) => file.split("_")[1] ?? "";
 export const seriesName = (file: string) => file.replace(/\.csv$/, "");

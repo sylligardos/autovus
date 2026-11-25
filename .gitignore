@@ -194,10 +194,12 @@ references/autovus-demo
 # demo export, too big for GitHub (124 MB); regenerate with app/export.py
 app/data/*/anomalies.csv
 app/data/*/local/series/
+app/data/*/L*/series/
 
 # local only, not for the public repo
 TRACKER.md
 app/data/notes.json
+app/data/games.json
 /scripts
 docs/local_evaluation.md
 
@@ -223,3 +225,6 @@ app/data/tsb-ad/local/game_picked6.json
 
 # The web app's own source folder. The Python rule "lib/" above would hide it.
 !app/web/lib/
+
+# Demo pages taken out of the nav on 2026-11-24, kept locally for reference
+app/web/archive/

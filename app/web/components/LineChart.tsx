@@ -1,11 +1,12 @@
 "use client";
 // A small line chart: several series over one x, a dashed vertical mark,
-// a dot on one series, axis labels at the corners.
+// dots on a series (filled, or hollow with a label), axis labels at the corners.
 
 export type Line = { y: number[]; color: string; width?: number; dash?: string; label?: string };
+export type Dot = { line: number; i: number; hollow?: boolean; label?: string };
 
-export function LineChart({ x, lines, mark, dot, height = 150, ymin, ymax, xlabel, left, right, title }: {
-  x: number[]; lines: Line[]; mark?: number; dot?: { line: number; i: number }; height?: number;
+export function LineChart({ x, lines, mark, dot, dots = [], height = 150, ymin, ymax, xlabel, left, right, title }: {
+  x: number[]; lines: Line[]; mark?: number; dot?: Dot; dots?: Dot[]; height?: number;
   ymin?: number; ymax?: number; xlabel?: string; left?: string; right?: string; title?: string;
 }) {
   const W = 330, H = 150, P = 6;
@@ -24,7 +25,12 @@ export function LineChart({ x, lines, mark, dot, height = 150, ymin, ymax, xlabe
             stroke={l.color} strokeWidth={l.width ?? 1.6} strokeDasharray={l.dash} vectorEffect="non-scaling-stroke" />
         ))}
         {mark !== undefined && <line x1={sx(mark)} y1={0} x2={sx(mark)} y2={H} stroke="var(--ink)" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
-        {dot && lines[dot.line] && <circle cx={sx(x[dot.i])} cy={sy(lines[dot.line].y[dot.i])} r={5} fill={lines[dot.line].color} />}
+        {[...(dot ? [dot] : []), ...dots].map((d, k) => lines[d.line] && (
+          <g key={k}>
+            <circle cx={sx(x[d.i])} cy={sy(lines[d.line].y[d.i])} r={5} fill={d.hollow ? "var(--panel)" : lines[d.line].color} stroke={d.hollow ? "var(--ink)" : "none"} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            {d.label && <text x={sx(x[d.i])} y={sy(lines[d.line].y[d.i]) - 9} fontFamily="var(--mono)" fontSize={10} fontWeight={600} fill="var(--ink)" textAnchor="middle">{d.label}</text>}
+          </g>
+        ))}
         {left && <text x={4} y={H - 2} fontFamily="var(--mono)" fontSize={10} fill="var(--muted)">{left}</text>}
         {right && <text x={W - 4} y={H - 2} fontFamily="var(--mono)" fontSize={10} fill="var(--muted)" textAnchor="end">{right}</text>}
         {xlabel && <text x={W / 2} y={H - 2} fontFamily="var(--mono)" fontSize={10} fill="var(--muted)" textAnchor="middle">{xlabel}</text>}

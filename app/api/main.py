@@ -95,7 +95,15 @@ def load_pair(benchmark, file, detector):
         values, label = load_series(p, file)
     except FileNotFoundError:
         raise HTTPException(404, f'unknown series {file}')
-    if detector in REFERENCES:
+    if detector.startswith('stitched:'):                    # 'stitched:<norm>:<winner of A1>,<winner of A2>,...'
+        _, norm, winners = detector.split(':', 2)
+        if norm not in orc.NORMS:
+            raise HTTPException(400, f'unknown norm {norm}')
+        try:
+            score = orc.stitch(label, lambda d: load_pair(benchmark, file, d)[1], winners.split(','), norm)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    elif detector in REFERENCES:
         score = reference_score(detector, label)
     else:
         score = load_score(p, file, detector)
@@ -419,13 +427,18 @@ def _read_column(data: bytes):
         pass
     rows = [r.strip() for r in text.replace(';', ',').splitlines() if r.strip()]
     vals = []
-    for r in rows:
+    for i, r in enumerate(rows):
         cell = r.split(',')[-1]
         try:
             vals.append(float(cell))
         except ValueError:
-            continue                                            # a header row
-    return np.asarray(vals, dtype=float)
+            if i == 0:
+                continue                                        # a header row
+            raise HTTPException(400, f'row {i + 1} is not a number: {cell[:20]!r}')   # skipping it would shift the score against the label
+    arr = np.asarray(vals, dtype=float)
+    if not np.all(np.isfinite(arr)):
+        raise HTTPException(400, 'the file holds NaN or infinite values')
+    return arr
 
 
 @app.post('/upload')
@@ -466,10 +479,19 @@ def notes_put(body: Notes):
 
 
 # ---------------------------------------------------------------- endpoints: local evaluation
-# The Local, Finder, Coverage, Buffers and Suspicious pages read the tables
-# app/export_local.py writes to app/data/<benchmark>/local/; the game scores
-# its rounds live.
-LOCAL_TABLES = ('pairs', 'cover', 'buffers_20', 'buffers_128', 'odd', 'game', 'speed', 'stitched')
+# The pages read exported tables; the game scores its rounds live.
+# A gear = the maximum buffer L (the switch of the top bar). The tables that depend on it are in
+# app/data/<benchmark>/L<L>/ (app/export_gear.py, app/export_profiles.py --L); the others are in
+# app/data/<benchmark>/local/ (app/export_local.py).
+GEARS = (20, 128)
+GEAR_TABLES = ('pairs', 'cover', 'stitched')
+LOCAL_TABLES = GEAR_TABLES + ('buffers_20', 'buffers_128', 'odd', 'game', 'speed')
+
+
+def gear(L):
+    if L not in GEARS:
+        raise HTTPException(400, f'L must be one of {GEARS}')
+    return f'L{L}'
 
 
 @lru_cache(maxsize=32)
@@ -478,59 +500,74 @@ def _local_bytes(path, mtime):
         return f.read()
 
 
-def local_file(benchmark, *parts):
+def local_file(benchmark, *parts, folder='local'):
     parser(benchmark)                                  # 404 on an unknown benchmark
-    path = os.path.join(DATA, benchmark, 'local', *parts)
+    path = os.path.join(DATA, benchmark, folder, *parts)
     if not os.path.exists(path):
-        raise HTTPException(404, 'not exported; run app/export_local.py')
+        raise HTTPException(404, 'not exported; run app/export_local.py or app/export_gear.py')
     return Response(content=_local_bytes(path, os.path.getmtime(path)), media_type='application/json')
 
 
 @app.get('/local/table/{name}')
-def local_table(name: str, b: str = Query('tsb-ad')):
+def local_table(name: str, b: str = Query('tsb-ad'), L: int = Query(20)):
     if name not in LOCAL_TABLES:
         raise HTTPException(404, f'unknown table {name}')
-    return local_file(b, name + '.json')
+    return local_file(b, name + '.json', folder=gear(L) if name in GEAR_TABLES else 'local')
 
 
 @app.get('/local/profiles')
-def local_profiles_index(b: str = Query('tsb-ad')):
-    """The datasets of the Profiles page (app/export_profiles.py)."""
-    return local_file(b, 'profiles', 'index.json')
+def local_profiles_index(b: str = Query('tsb-ad'), L: int = Query(20)):
+    """The datasets of the Profiles page (app/export_profiles.py --L)."""
+    return local_file(b, 'profiles', 'index.json', folder=gear(L))
 
 
 @app.get('/local/profiles/{dataset}')
-def local_profiles(dataset: str, b: str = Query('tsb-ad')):
+def local_profiles(dataset: str, b: str = Query('tsb-ad'), L: int = Query(20)):
     if not dataset.replace('-', '').replace('_', '').isalnum():
         raise HTTPException(400, 'bad dataset name')
-    return local_file(b, 'profiles', dataset + '.json')
+    return local_file(b, 'profiles', dataset + '.json', folder=gear(L))
 
 
 @app.get('/local/series/{file}')
-def local_series(file: str, b: str = Query('tsb-ad')):
+def local_series(file: str, b: str = Query('tsb-ad'), L: int = Query(20)):
     if '/' in file or file.startswith('.'):
         raise HTTPException(400, 'bad file name')
-    return local_file(b, 'series', file + '.json')
+    return local_file(b, 'series', file + '.json', folder=gear(L))
 
 
-@lru_cache(maxsize=64)
+# The game pool is 43 rounds per gear; both caches hold every round of both gears, so a new draw recomputes nothing.
+@lru_cache(maxsize=256)
+def game_select(benchmark, file, detector, L):
+    """AutoVUS (per side) on one series: its anomalies with their buffers, its value and the time it took.
+    The arrays come from load_pair (its own cache); only the small results are kept here."""
+    label, score, _ = load_pair(benchmark, file, detector)
+    auto = AutoVUS(FastVUS(L=L, cumulative=True), sides='per_side')
+    t0 = time.perf_counter()
+    result = auto.compute(label, score)
+    seconds = time.perf_counter() - t0
+    return auto.anomalies, float(result['adjusted']), seconds
+
+
+@lru_cache(maxsize=256)
 def game_round(benchmark, file, detector, k, L):
     """One round: the window around anomaly k, and the per-side buffers AutoVUS picks there."""
     label, score, values = load_pair(benchmark, file, detector)
-    auto = AutoVUS(FastVUS(L=L, cumulative=True), sides='per_side')
-    t0 = time.perf_counter()
-    auto.compute(label, score)
-    seconds = time.perf_counter() - t0
-    if not 0 <= k < len(auto.anomalies):
+    anomalies, autovus, seconds = game_select(benchmark, file, detector, L)
+    if not 0 <= k < len(anomalies):
         raise HTTPException(404, 'no such anomaly')
-    a = auto.anomalies[k]
+    a = anomalies[k]
     st, en = int(a['start']), int(a['end'])
     lo, hi = max(0, st - 10 * L), min(len(label), en + 10 * L + 1)
     v = scaled(values[lo:hi]) if values is not None else np.zeros(hi - lo)
     s = scaled(score)[lo:hi]
     return {'file': file, 'detector': detector, 'k': k, 'L': L, 'lo': lo, 'hi': hi, 'start': st, 'end': en,
             'b_left': int(a['left']['buffer_val']), 'b_right': int(a['right']['buffer_val']), 'type': a['detection'],
-            'seconds': seconds, 'values': [round(float(x), 4) for x in v], 'score': [round(float(x), 4) for x in s]}
+            'seconds': seconds, 'autovus': autovus, 'values': [round(float(x), 4) for x in v], 'score': [round(float(x), 4) for x in s],
+            # the gain at every buffer 0..L per side (the rule curve; b* is its first argmax), shown while the player drags
+            'gain_left': [round(float(x), 6) for x in a['left']['ratio_curve']],
+            'gain_right': [round(float(x), 6) for x in a['right']['ratio_curve']],
+            # every label of the window (the Draw mode paints a score under them)
+            'labels': [[s0 + lo, e0 + lo] for s0, e0 in runs(np.asarray(label[lo:hi]).astype(int))]}
 
 
 def draw_rounds(rounds, n):
@@ -550,8 +587,8 @@ def draw_rounds(rounds, n):
 
 
 @app.get('/game/rounds')
-def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None), set: str | None = Query(None)):
-    """The rounds of game.json; with n, a new draw of n of them on every call.
+def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None), set: str | None = Query(None), L: int | None = Query(None)):
+    """The rounds of game.json, scored at L (default: the L of the file); with n, a new draw of n of them on every call.
     set=candidates reads game_candidates.json instead (rounds proposed for the pool, to review)."""
     if set not in (None, 'candidates'):
         raise HTTPException(400, 'unknown set')
@@ -560,16 +597,128 @@ def game_rounds(b: str = Query('tsb-ad'), n: int | None = Query(None), set: str 
         raise HTTPException(404, 'no such game file; run app/export_local.py')
     with open(path) as f:
         g = json.load(f)
+    L = int(L or g.get('L', 20))
     out = []
     for r in g['rounds']:
         try:
-            out.append(game_round(b, r['file'], r['detector'], int(r['k']), int(g.get('L', 20))))
+            out.append(game_round(b, r['file'], r['detector'], int(r['k']), L))
         except HTTPException:
             continue
     pool = len(out)
     if n is not None and n < pool:
         out = draw_rounds(out, max(n, 1))
-    return {'L': g.get('L', 20), 'pool': pool, 'rounds': out}
+    return {'L': L, 'pool': pool, 'rounds': out}
+
+
+class Buffers(BaseModel):
+    file: str
+    detector: str
+    k: int
+    b_left: int
+    b_right: int
+    b: str = 'tsb-ad'
+    L: int = 20
+
+
+@app.post('/game/score')
+def game_score(x: Buffers):
+    """AutoVUS of the series with the player's buffers on anomaly k (every other anomaly keeps AutoVUS's), next to AutoVUS's own."""
+    gear(x.L)
+    label, score, _ = load_pair(x.b, x.file, x.detector)
+    anomalies, autovus, _ = game_select(x.b, x.file, x.detector, x.L)
+    if not 0 <= x.k < len(anomalies):
+        raise HTTPException(404, 'no such anomaly')
+    cap_left = np.array([a['left']['buffer_val'] for a in anomalies])
+    cap_right = np.array([a['right']['buffer_val'] for a in anomalies])
+    cap_left[x.k] = max(0, min(x.L, x.b_left))
+    cap_right[x.k] = max(0, min(x.L, x.b_right))
+    t0 = time.perf_counter()
+    yours = AdjustedVUS(FastVUS(L=x.L, cumulative=True)).compute(label, np.asarray(score, dtype=float), cap_left, cap_right)['adjusted']
+    return {'yours': float(yours), 'autovus': autovus, 'seconds': time.perf_counter() - t0}
+
+
+class Played(BaseModel):
+    """One finished game, for the Played so far strip of the Play page."""
+    name: str
+    mode: str                                   # 'game' (Find the buffer) or 'draw' (Draw your detection)
+    matched: int | None = None                  # game: verdicts equal to AutoVUS's
+    rounds: int | None = None                   # game: rounds played
+    peak: float | None = None                   # game: mean closeness of the player's buffers to the peak gain, 0..1
+    labels: int | None = None                   # draw: labels in the window
+    types: list[str] | None = None              # draw: AutoVUS's verdict per label
+    autovus: float | None = None                # draw: AutoVUS of the drawing
+
+
+MAX_GAMES = 5000
+
+
+@app.get('/games')
+def games_get():
+    path = os.path.join(DATA, 'games.json')
+    if not os.path.exists(path):
+        return {'games': []}
+    with open(path) as f:
+        return {'games': json.load(f)}
+
+
+@app.post('/games')
+def games_post(x: Played):
+    name = ' '.join(x.name.split())[:24]
+    if not name or x.mode not in ('game', 'draw'):
+        raise HTTPException(400, 'a name and a known mode are needed')
+    entry = {k: v for k, v in x.model_dump().items() if v is not None}
+    entry['name'] = name
+    if entry.get('types'):
+        entry['types'] = [str(t)[:8] for t in entry['types']][:12]
+    entry['when'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    path = os.path.join(DATA, 'games.json')
+    games = []
+    if os.path.exists(path):
+        with open(path) as f:
+            games = json.load(f)
+    games.insert(0, entry)
+    os.makedirs(DATA, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(games[:MAX_GAMES], f, indent=0)
+    return {'ok': True, 'games': len(games)}
+
+
+class Drawing(BaseModel):
+    file: str
+    lo: int
+    hi: int
+    score: list[float]
+    b: str = 'tsb-ad'
+    L: int = 20
+
+
+MAX_DRAW = 6000                  # points of a painted window (a game window at L=128 is about 2700)
+
+
+@app.post('/draw')
+def draw(d: Drawing):
+    """The Draw mode of the Play page: AutoVUS (per side) on one window of a series, the score painted by the visitor."""
+    gear(d.L)
+    label, _, _ = load_pair(d.b, d.file, 'Random')
+    lo, hi = max(0, d.lo), min(len(label), d.hi)
+    if hi - lo != len(d.score) or not 0 < hi - lo <= MAX_DRAW:
+        raise HTTPException(400, 'the score does not fit the window')
+    lab = np.asarray(label[lo:hi]).astype(int)
+    if lab.sum() == 0:
+        raise HTTPException(400, 'the window has no anomaly')
+    score = np.clip(np.nan_to_num(np.asarray(d.score, dtype=float)), 0.0, 1.0)
+    if score.max() <= 0:                                             # nothing painted yet: nothing to select on
+        return {'seconds': 0.0, 'autovus': None, 'vus_full': None,
+                'anomalies': [{'k': k, 'start': s + lo, 'end': e + lo, 'b_left': 0, 'b_right': 0, 'type': 'missed'} for k, (s, e) in enumerate(runs(lab))]}
+    eng = FastVUS(L=d.L, cumulative=True)
+    auto = AutoVUS(eng, sides='per_side')
+    t0 = time.perf_counter()
+    result = auto.compute(lab, score)
+    seconds = time.perf_counter() - t0
+    full = AdjustedVUS(eng).compute(lab, score)
+    return {'seconds': seconds, 'autovus': float(result['adjusted']), 'vus_full': float(full['vus']),
+            'anomalies': [{'k': k, 'start': int(a['start']) + lo, 'end': int(a['end']) + lo, 'b_left': int(a['left']['buffer_val']),
+                           'b_right': int(a['right']['buffer_val']), 'type': a['detection']} for k, a in enumerate(result['anomalies'])]}
 
 
 # ---------------------------------------------------------------- endpoints: the stitched score
@@ -577,7 +726,7 @@ import oracle as orc  # noqa: E402
 
 
 @lru_cache(maxsize=64)
-def stitched_oracle(benchmark, file, winners, norm='median'):
+def stitched_oracle(benchmark, file, winners, norm='median', L=20):
     """Region k (midpoint split) takes winners[k]'s score on the common scale `norm` (oracle.NORMS)."""
     if norm not in orc.NORMS:
         raise HTTPException(400, f'unknown norm {norm}')
@@ -587,7 +736,7 @@ def stitched_oracle(benchmark, file, winners, norm='median'):
     except ValueError as e:
         raise HTTPException(400, str(e))
     t0 = time.perf_counter()
-    m = orc.evaluate(label, score)
+    m = orc.evaluate(label, score, L)
     seconds = time.perf_counter() - t0
     return score, {'winners': list(winners), 'norm': norm, 'vusG': [round(float(x), 3) for x in m['vusG']],
                    'autoG': round(m['autoG'], 3), 'aucpr': round(m['aucpr'], 3),
@@ -596,8 +745,9 @@ def stitched_oracle(benchmark, file, winners, norm='median'):
 
 @app.get('/local/oracle')
 def local_oracle(file: str, winners: str, b: str = Query('tsb-ad'), norm: str = Query('median'), bins: int = Query(2000),
-                 start: int = Query(0), end: int | None = Query(None)):
-    score, out = stitched_oracle(b, file, tuple(winners.split(',')), norm)
+                 start: int = Query(0), end: int | None = Query(None), L: int = Query(20)):
+    gear(L)
+    score, out = stitched_oracle(b, file, tuple(winners.split(',')), norm, L)
     s, e = window(len(score), start, end)
     lo, hi, nb = binned(scaled(score)[s:e], bins)
     return {**out, 'n': int(len(score)), 'start': s, 'end': e, 'bins': nb, 'lo': lo, 'hi': hi}

@@ -50,14 +50,45 @@ export const loadNotes = () => get<Notes>("/notes");
 export const saveNotes = (notes: Notes) =>
   fetch(`${base()}/notes`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes }) }).catch(() => {});
 
-// The local-evaluation pages (tables from app/export_local.py, the game live).
-export const loadLocalTable = <T>(b: string, name: string) => get<T>(`/local/table/${name}?${q({ b })}`);
-export const loadLocalSeries = <T>(b: string, file: string) => get<T>(`/local/series/${encodeURIComponent(file)}?${q({ b })}`);
-export const loadProfilesIndex = <T>(b: string) => get<T>(`/local/profiles?${q({ b })}`);
-export const loadProfiles = <T>(b: string, dataset: string) => get<T>(`/local/profiles/${encodeURIComponent(dataset)}?${q({ b })}`);
-export const loadGame = <T>(b: string, n?: number, set?: string) => get<T>(`/game/rounds?${q({ b, n, set })}`);
+// The local-evaluation pages (tables from app/export_gear.py and app/export_local.py, the game live).
+// L is the gear (the switch of the top bar); the tables that do not depend on it ignore it.
+export const loadLocalTable = <T>(b: string, name: string, L?: number) => get<T>(`/local/table/${name}?${q({ b, L })}`);
+export const loadLocalSeries = <T>(b: string, file: string, L: number) => get<T>(`/local/series/${encodeURIComponent(file)}?${q({ b, L })}`);
+export const loadProfilesIndex = <T>(b: string, L: number) => get<T>(`/local/profiles?${q({ b, L })}`);
+export const loadProfiles = <T>(b: string, dataset: string, L: number) => get<T>(`/local/profiles/${encodeURIComponent(dataset)}?${q({ b, L })}`);
+export const loadGame = <T>(b: string, L: number, n?: number, set?: string) => get<T>(`/game/rounds?${q({ b, L, n, set })}`);
+// The Draw mode of the Play page: AutoVUS on one window of a series with the score the visitor painted.
+export async function scoreDrawing<T>(b: string, file: string, lo: number, hi: number, L: number, score: number[]): Promise<T | null> {
+  try {
+    const r = await fetch(`${base()}/draw`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ b, file, lo, hi, L, score }) });
+    return r.ok ? ((await r.json()) as T) : null;
+  } catch {
+    return null;
+  }
+}
+// Find the buffer: the AutoVUS value of the series with the player's buffers on anomaly k, next to AutoVUS's own.
+export type BuffersDoc = { yours: number; autovus: number; seconds: number };
+export const scoreBuffers = (b: string, file: string, detector: string, k: number, L: number, b_left: number, b_right: number) =>
+  post<BuffersDoc>("/game/score", { b, file, detector, k, L, b_left, b_right });
+// Who played (the Played so far strip of the Play page): app/data/games.json.
+export type Played = {
+  name: string; mode: "game" | "draw"; when: string;
+  matched?: number; rounds?: number; peak?: number;          // Find the buffer
+  labels?: number; types?: string[]; autovus?: number;       // Draw your detection
+};
+export const loadGames = () => get<{ games: Played[] }>("/games");
+// keepalive: the request outlives the page (the player leaves mid-game or closes the tab).
+export const saveGame = (x: Omit<Played, "when">, keepalive = false) => post<{ ok: boolean }>("/games", x, keepalive).then((d) => d?.ok === true);
+async function post<T>(path: string, body: unknown, keepalive = false): Promise<T | null> {
+  try {
+    const r = await fetch(`${base()}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive });
+    return r.ok ? ((await r.json()) as T) : null;
+  } catch {
+    return null;
+  }
+}
 export type OracleNorm = "median";
 export type OracleDoc = ScoreDoc & { winners: string[]; norm: OracleNorm; vusG: number[]; autoG: number; aucpr: number; auto: number[]; seconds: number };
-export const loadOracle = (b: string, file: string, winners: string[], norm: OracleNorm = "median", bins = 2000, range?: [number, number]) =>
-  get<OracleDoc>(`/local/oracle?${q({ b, file, winners: winners.join(","), norm, bins, ...(range ? { start: range[0], end: range[1] } : {}) })}`);
+export const loadOracle = (b: string, file: string, L: number, winners: string[], norm: OracleNorm = "median", bins = 2000, range?: [number, number]) =>
+  get<OracleDoc>(`/local/oracle?${q({ b, file, L, winners: winners.join(","), norm, bins, ...(range ? { start: range[0], end: range[1] } : {}) })}`);
 export const loadAucPr = (b: string, file: string) => get<Record<string, number | null>>(`/local/aucpr/${encodeURIComponent(file)}?${q({ b })}`);

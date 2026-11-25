@@ -1,13 +1,12 @@
 // Types, constants and URL state shared by server and client code.
 
+// The page list of the top bar. The game (/play) is not a page of the story: it has its own button on the right.
 export const PAGES = [
   { path: "/", label: "Intro" },
-  { path: "/play", label: "Play" },
   { path: "/local", label: "Explore" },
+  { path: "/cases", label: "Cases" },
   { path: "/rankings", label: "Rankings" },
-  { path: "/coverage", label: "Coverage" },
   { path: "/profiles", label: "Profiles" },
-  { path: "/coverage-old", label: "Coverage old" },
 ] as const;
 
 export const BENCHMARKS = [{ id: "tsb-ad", label: "TSB-AD" }];
@@ -15,12 +14,18 @@ export const DEFAULT_BENCHMARK = "tsb-ad";
 export const BENCHMARK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 export const REFERENCES = ["Delayed oracle", "Random"];
 
-export type State = { benchmark: string };
+// The two gears of the demo: the maximum buffer L, the same for VUS and AutoVUS.
+export const GEARS = [20, 128] as const;
+export type Gear = (typeof GEARS)[number];
+export const DEFAULT_GEAR: Gear = 20;
+
+export type State = { benchmark: string; L: Gear };
 type Params = Record<string, string | string[] | undefined>;
 
 export function stateFrom(params: Params): State {
   const b = typeof params.b === "string" ? params.b : DEFAULT_BENCHMARK;
-  return { benchmark: BENCHMARK_ID.test(b) ? b : DEFAULT_BENCHMARK };
+  const L = GEARS.find((g) => String(g) === params.L) ?? DEFAULT_GEAR;
+  return { benchmark: BENCHMARK_ID.test(b) ? b : DEFAULT_BENCHMARK, L };
 }
 export function param(params: Params, key: string): string | null {
   const v = params[key];
@@ -29,11 +34,11 @@ export function param(params: Params, key: string): string | null {
 
 // Every link carries the shared state, plus what the page asks for.
 export function href(pathname: string, state: State, extra: Record<string, string> = {}): string {
-  const q = new URLSearchParams({ b: state.benchmark, ...extra });
+  const q = new URLSearchParams({ b: state.benchmark, L: String(state.L), ...extra });
   return `${pathname}?${q}`;
 }
 
-// The metrics the tables hold. AutoVUS (paper rule, one buffer for both sides) is defined over VUS-PR only.
+// The metrics the tables hold. AutoVUS (paper rule, one buffer per side) is defined over VUS-PR only.
 // Adjusted VUS is VUS-PR with the fixed buffer, chance-adjusted, no selection (skill_full in the export).
 export const METRICS: { key: MetricKey; label: string; accent?: boolean }[] = [
   { key: "autovus", label: "AutoVUS", accent: true },

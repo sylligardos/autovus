@@ -1,9 +1,10 @@
 "use client";
-// Explore, the "Global vs local" tab: where the whole-series AutoVUS (global)
-// and the per-anomaly AutoVUS (local) are far apart. Datasets first, then the
-// series of one dataset, each with its largest gap; every pair as a point of
-// the scatter on top; the top pairs of the chosen case on the side, 20 at a
-// time. A series opens on the Series tab.
+// Where two scores of a series are far apart. On Cases: the whole-series AutoVUS
+// (global) against the per-anomaly AutoVUS (local, mean or lowest). On Profiles:
+// the stitched score against the best detector. The comparison is the `mode` prop.
+// Datasets first, then the series of one dataset, each with its largest gap; every
+// pair as a point of the scatter on top; the top pairs on the side, 20 at a time.
+// A series opens in Explore.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -14,28 +15,21 @@ import { datasetOf, seriesName, type PairsTable, type StitchedTable } from "@/li
 import { useRemembered } from "@/lib/remember";
 import { GapScatter } from "./GapScatter";
 
-type Mode = "mean" | "worst" | "stitched";
+export type Mode = "mean" | "worst" | "stitched";
 const AXES: Record<Mode, { x: string; y: string }> = {
   mean: { x: "Mean AutoVUS Local", y: "AutoVUS Global" }, worst: { x: "Lowest AutoVUS Local", y: "AutoVUS Global" },
   stitched: { x: "Best detector AutoVUS", y: "Stitched score AutoVUS" },
 };
 const LABEL: Record<Mode, string> = { mean: "AutoVUS Global minus mean AutoVUS Local", worst: "AutoVUS Global minus lowest AutoVUS Local", stitched: "Stitched score AutoVUS minus best detector AutoVUS" };
-// What the chosen comparison brings out, shown under the buttons.
-const GOAL: Record<Mode, string> = {
-  mean: "Detectors whose score on the whole series differs from their average score per anomaly.",
-  worst: "Detectors with a good score on the whole series that miss one of its anomalies.",
-  stitched: "Series where combining detectors per anomaly beats the best single detector.",
-};
 const STEP = 20;   // top pairs shown at first, and added by "Show more"
 const signed = (g: number) => (g >= 0 ? "+" : "−") + Math.abs(g).toFixed(2);
 const barColor = (g: number) => (g >= 0 ? "var(--late)" : "var(--accent)");
 
-export function FinderView({ state }: { state: State }) {
+export function FinderView({ state, mode }: { state: State; mode: Mode }) {
   const b = state.benchmark;
   const [t, setT] = useState<PairsTable | null>(null);
   const [error, setError] = useState(false);
   const [st, setSt] = useState<StitchedTable | null>(null);
-  const [mode, setMode] = useRemembered<Mode>(`finder:${b}:mode`, "mean");
   const [dataset, setDataset] = useRemembered<string | null>(`finder:${b}:dataset`, null);
   const [off, setOff] = useState<number[]>([]);
   const [more, setMore] = useState<{ key: string; n: number }>({ key: "", n: STEP });
@@ -44,10 +38,11 @@ export function FinderView({ state }: { state: State }) {
 
   useEffect(() => {
     let live = true;
-    loadLocalTable<PairsTable>(b, "pairs").then((x) => { if (live) { if (x) setT(x); else setError(true); } });
-    loadLocalTable<StitchedTable>(b, "stitched").then((x) => { if (live) setSt(x); });
+    setError(false);
+    loadLocalTable<PairsTable>(b, "pairs", state.L).then((x) => { if (live) { if (x) setT(x); else setError(true); } });
+    loadLocalTable<StitchedTable>(b, "stitched", state.L).then((x) => { if (live) setSt(x); });
     return () => { live = false; };
-  }, [b]);
+  }, [b, state.L]);
 
   const ds = useMemo(() => (t ? t.series.map(datasetOf) : []), [t]);
   const view = useMemo(() => {
@@ -94,20 +89,12 @@ export function FinderView({ state }: { state: State }) {
   const moreKey = `${mode}|${dataset ?? ""}|${off.join(",")}`;
   const shown = more.key === moreKey ? more.n : STEP;
 
-  const localHref = (file: string, det?: string) => href("/local", state, det ? { s: file, det } : { s: file });
+  // A stitched case opens on Best coverage, with the best single detector pinned: one click from "Stitch winners".
+  const localHref = (file: string, det?: string) => href("/local", state, { s: file, ...(det ? { det } : {}), ...(mode === "stitched" ? { show: "best" } : {}) });
 
   return (
     <>
       <aside className="rail" aria-label="Controls">
-        <div className="field">
-          <span>Compare AutoVUS Global to</span>
-          <div className="seg" role="group" aria-label="Compare AutoVUS Global to" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
-            <button type="button" aria-pressed={mode === "mean"} onClick={() => setMode("mean")} style={{ height: 34 }}>Mean AutoVUS Local</button>
-            <button type="button" aria-pressed={mode === "worst"} onClick={() => setMode("worst")} style={{ height: 34 }}>Lowest AutoVUS Local</button>
-            <button type="button" aria-pressed={mode === "stitched"} onClick={() => setMode("stitched")} style={{ height: 34 }}>Stitched score, best detector</button>
-          </div>
-          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.4 }}>{GOAL[mode]}</p>
-        </div>
         <div className="field">
           <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>Detectors
             <span style={{ display: "flex", gap: 4, textTransform: "none", letterSpacing: 0 }}>
@@ -139,7 +126,7 @@ export function FinderView({ state }: { state: State }) {
             <button type="button" onClick={() => setDataset(null)} style={{ padding: 0, border: 0, background: "transparent", cursor: "pointer", fontSize: 14, fontWeight: 600, color: dataset ? "var(--accent)" : "var(--ink)" }}>All datasets</button>
             {dataset && (<><span className="muted" aria-hidden="true">›</span><span style={{ fontWeight: 600 }}>{dataset}</span></>)}
           </nav>
-          {error && <span className="muted">No local tables. Run <code>conda run -n autovus python app/export_local.py</code>.</span>}
+          {error && <span className="muted">No local tables. Run <code>conda run -n autovus python app/export_gear.py --L {state.L}</code>.</span>}
           {!view && !error && <div style={{ height: 400 }} />}
           <div style={{ maxHeight: "max(240px, calc(100vh - 684px))", overflowY: "auto" }}>
           {view && !dataset && (

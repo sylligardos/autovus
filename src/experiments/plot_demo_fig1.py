@@ -5,9 +5,9 @@ The number above each anomaly in a detector row is its AutoVUS Local there. Left
 margin of a detector row: its name, AUC-PR, VUS-PR at L, AutoVUS on the whole
 series (global), and Local, the mean of the local scores.
 
-Values: local and global AutoVUS from experiments/local_benchmark/series/<file>.npz
-(chance-adjusted as in app/export_local.py), AUC-PR and VUS-PR from
-app/data/tsb-ad/scores20.json. Same visual language as Fig 1(b) of the research
+Values: local and global AutoVUS per side from experiments/local_benchmark/series_ps20/<file>.npz
+(chance-adjusted as in app/export_gear.py), AUC-PR and VUS-PR from
+app/data/tsb-ad/L20/scores.json. Same visual language as Fig 1(b) of the research
 paper (src/experiments/plot_fig1b.py).
 
 Usage: conda run -n autovus python src/experiments/plot_demo_fig1.py
@@ -26,16 +26,12 @@ sys.path.insert(0, os.path.join(ROOT, "app"))
 sys.path.insert(0, os.path.join(ROOT, "app", "api"))
 from tsad_parser import TSADParser  # noqa: E402
 from bench import load_series, load_score  # noqa: E402
+import oracle as orc  # noqa: E402
 
 L = 20
 NAME, FILE, DETS = "556_YAHOO_id_6", "556_YAHOO_id_6_WebService_tr_500_1st_359.csv", ["AutoEncoder", "Chronos"]
 RED, BLUE = "#d62728", "#1f5fbf"
 W, FS, NAME_FS, BOX_FS = 3.5, 7, 8, 6.5      # one IEEE column
-
-
-def adjusted(area, random):
-    v, r = area[..., :L + 1].mean(-1), random[..., :L + 1].mean(-1)
-    return (v - r) / np.maximum(1 - r, 1e-10)
 
 
 def span(ax, a, b, minw):
@@ -49,12 +45,12 @@ def span(ax, a, b, minw):
 def main(out_pdf, out_png):
     p = TSADParser()
     values, label = load_series(p, FILE)
-    z = np.load(os.path.join(ROOT, "experiments", "local_benchmark", "series", FILE + ".npz"))
+    z = np.load(os.path.join(ROOT, "experiments", "local_benchmark", f"series_ps{L}", FILE + ".npz"))
     dets = [str(d) for d in z["detectors"]]
-    local = adjusted(z["auto20_area"], z["auto20_random"])           # (D, K)
-    glob = z["auto20_adjusted"]
+    local = orc._local_adjusted(z[f"ps{L}_area"], z[f"ps{L}_random"], L)   # (D, K), as the demo tables
+    glob = z[f"ps{L}_adjusted"]
     start, end = z["start"], z["end"]
-    table = json.load(open(os.path.join(ROOT, "app", "data", "tsb-ad", "scores20.json")))["files"][FILE]
+    table = json.load(open(os.path.join(ROOT, "app", "data", "tsb-ad", f"L{L}", "scores.json")))["files"][FILE]
 
     n = len(label); x = np.arange(n); minw = 0.006 * n
     rows_in = [0.5, 0.72, 0.72]; top_in, bot_in, gap_in, left_in, right_in = 0.16, 0.3, 0.05, 0.74, 0.03

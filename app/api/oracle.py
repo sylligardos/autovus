@@ -1,5 +1,5 @@
 """The stitched score: region k (midpoint split, FastVUS.regions) takes the
-score of anomaly k's winner (best local AutoVUS@20, tie to the detector best
+score of anomaly k's winner (best local AutoVUS, tie to the detector best
 on the most anomalies), each piece shifted so its median is 0, clipped at 0
 and divided by its max, then scored.
 Used by the API (/local/oracle).
@@ -58,12 +58,12 @@ def _local_adjusted(area, random, L):
     return (v - r) / np.maximum(1 - r, 1e-10)
 
 
-def evaluate(label, score):
-    """AUC-PR, VUS-PR at every L = 0..128, AutoVUS@20, and per anomaly the
-    local AutoVUS@20 (buffers capped at b*)."""
+def evaluate(label, score, L=20):
+    """AUC-PR, VUS-PR at every L = 0..128, AutoVUS@L per side, and per anomaly the
+    local AutoVUS@L (buffers capped at b* on each side)."""
     e = FastVUS(L=128, cumulative=True)
     vusG = np.asarray(e.compute(label, score), dtype=float)
-    r = AutoVUS(FastVUS(L=20, cumulative=True, per_anomaly=True)).compute(label, score)
-    loc = _local_adjusted(r['local']['area'], r['local']['random'], 20)
+    r = AutoVUS(FastVUS(L=L, cumulative=True, per_anomaly=True), sides='per_side').compute(label, score)
+    loc = _local_adjusted(r['local']['area'], r['local']['random'], L)
     return {'aucpr': float(average_precision_score(label, score)), 'vusG': vusG,
             'autoG': float(r['adjusted']), 'auto': loc}

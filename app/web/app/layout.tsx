@@ -7,7 +7,7 @@ const sans = Public_Sans({ subsets: ["latin"], weight: ["400", "500", "600", "70
 const mono = DM_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
-  title: "AutoVUS",
+  title: "Protagonist",
   description: "A buffer for every anomaly, chosen by the detector's own lag.",
 };
 

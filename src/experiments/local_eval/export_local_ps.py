@@ -1,19 +1,19 @@
 """Benchmark-wide per-anomaly AutoVUS with per-side buffers, for every (series, detector) of TSB-AD.
 
-    nice -n 19 conda run -n autovus python src/experiments/local_eval/export_local_ps.py --workers 4
-    (resumable: series with an output file are skipped)
+    nice -n 19 conda run -n autovus python src/experiments/local_eval/export_local_ps.py --L 20 --workers 4
+    (resumable: series with an output file are skipped; --mem_gb caps each worker)
 
-Same as the auto20 run of export_local.py, with sides='per_side':
-  AutoVUS(FastVUS(L=20, cumulative=True, per_anomaly=True), sides='per_side'), CPU.
+Same as the auto20 run of export_local.py, with sides='per_side' and the maximum buffer L as an option:
+  AutoVUS(FastVUS(L=L, cumulative=True, per_anomaly=True), sides='per_side'), CPU.
 
-One file per series: experiments/local_benchmark/series_ps20/<series>.npz with
+One file per series: experiments/local_benchmark/series_ps<L>/<series>.npz with
   detectors (D,), start, end (K,) inclusive, original coordinates
-  ps20_area (D, K, 21), ps20_random (D, K, 21) float32: per-anomaly area and random
+  ps<L>_area (D, K, L+1), ps<L>_random (D, K, L+1) float32: per-anomaly area and random
   baseline per buffer, every anomaly capped at its b* on each side
-  ps20_bleft, ps20_bright (D, K) int16: the selected buffers
-  ps20_adjusted (D,) float32 (global AutoVUS), ps20_cost (D, T) float32
+  ps<L>_bleft, ps<L>_bright (D, K) int16: the selected buffers
+  ps<L>_adjusted (D,) float32 (global AutoVUS), ps<L>_cost (D, T) float32
   errors: detectors skipped (missing / NaN / wrong length / exception)
-Log: experiments/local_benchmark/run_ps20.log.
+Log: experiments/local_benchmark/run_ps<L>.log.
 """
 import argparse
 import json
@@ -37,7 +37,16 @@ from tsad_parser import TSADParser  # noqa: E402
 from bench import load_series, load_score  # noqa: E402
 
 OUT = ROOT / "experiments" / "local_benchmark"
+L = 20                      # set by --L in main and in every worker
 SERIES_DIR = OUT / "series_ps20"
+
+
+def setup(L_, mem_gb):
+    global L, SERIES_DIR
+    L, SERIES_DIR = L_, OUT / f"series_ps{L_}"
+    if mem_gb:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (mem_gb << 30, mem_gb << 30))
 
 
 def one_series(file):
@@ -54,7 +63,7 @@ def one_series(file):
             if s is None or len(s) != T:
                 errors.append(f"{d}: missing, NaN or wrong length")
                 continue
-            r = AutoVUS(FastVUS(L=20, cumulative=True, per_anomaly=True), sides="per_side").compute(y, s)
+            r = AutoVUS(FastVUS(L=L, cumulative=True, per_anomaly=True), sides="per_side").compute(y, s)
             la = r["local"]
         except Exception:
             errors.append(f"{d}: {traceback.format_exc(limit=2)}")
@@ -69,31 +78,34 @@ def one_series(file):
         f32 = lambda v: np.asarray(v, dtype=np.float32)  # noqa: E731
         tmp = SERIES_DIR / (file + ".tmp.npz")
         np.savez(tmp, detectors=np.array(dets), start=start, end=end, errors=np.array(errors),
-                 ps20_area=f32(area), ps20_random=f32(rand), ps20_cost=f32(cost),
-                 ps20_bleft=np.asarray(bl, dtype=np.int16), ps20_bright=np.asarray(br, dtype=np.int16),
-                 ps20_adjusted=f32(adj))
+                 **{f"ps{L}_area": f32(area), f"ps{L}_random": f32(rand), f"ps{L}_cost": f32(cost),
+                    f"ps{L}_bleft": np.asarray(bl, dtype=np.int16), f"ps{L}_bright": np.asarray(br, dtype=np.int16),
+                    f"ps{L}_adjusted": f32(adj)})
         os.replace(tmp, SERIES_DIR / (file + ".npz"))
     return file, T, len(dets), errors, time.time() - t0
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--L", type=int, default=20, help="maximum buffer")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--mem_gb", type=int, default=10, help="address-space cap per worker")
     ap.add_argument("--limit", type=int, default=None, help="only the first N pending series (smoke test)")
     ap.add_argument("--only", nargs="*", default=None, help="only these series files")
     a = ap.parse_args()
+    setup(a.L, 0)
     SERIES_DIR.mkdir(parents=True, exist_ok=True)
     meta = json.load(open(ROOT / "app/data/tsb-ad/series.json"))
     files = a.only or sorted(meta, key=lambda f: -(meta[f]["n"] + 50 * meta[f]["anomalies"]))  # heaviest first
     todo = [f for f in files if not (SERIES_DIR / (f + ".npz")).exists()]
     if a.limit:
         todo = todo[:a.limit]
-    log = open(OUT / "run_ps20.log", "a")
+    log = open(OUT / f"run_ps{a.L}.log", "a")
     t0 = time.time()
     print(f"{time.strftime('%F %T')} start: {len(todo)} series to do, {len(files) - len(todo)} done, "
           f"{a.workers} workers", file=log, flush=True)
     n_err = 0
-    with Pool(a.workers) as pool:
+    with Pool(a.workers, setup, (a.L, a.mem_gb)) as pool:
         for i, (f, T, nd, errors, sec) in enumerate(pool.imap_unordered(one_series, todo, chunksize=1), 1):
             n_err += len(errors)
             print(f"{time.strftime('%F %T')} [{i}/{len(todo)}] {f} T={T} detectors={nd} "

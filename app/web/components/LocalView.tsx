@@ -1,7 +1,7 @@
 "use client";
 // The Local page: one series, its anomalies, and per detector the local
 // AutoVUS of every anomaly, as numbers on the score lanes (Scores) or as
-// cells (Heat map). Everything at L = 20. Drag to zoom, Back to
+// cells (Heat map). Everything at the gear L (state.L). Drag to zoom, Back to
 // step out, double click for all.
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
@@ -17,26 +17,29 @@ type View = [number, number];
 type Mode = "top" | "best" | "all";
 type Sort = "ap" | "vus" | "auto" | "local";         // the column the detectors are ordered by
 const SORT_KEY = { ap: "ap", vus: "vv", auto: "gv", local: "lv" } as const;
-const L = 20;                                      // the one buffer length of the demo
 const COLS = "150px minmax(0, 1fr) 56px 56px 64px 56px";
 const NORMS: [OracleNorm, string][] = [["median", "Stitched score"]];
 type Oracles = Partial<Record<OracleNorm, OracleDoc>>;
 const GAP = 4;                                     // percent between two anomaly markers
 
-export function LocalView({ state, seriesByDataset, initialFile, initialDet, initialView, initialPick = null }: {
+export function LocalView({ state, seriesByDataset, initialFile, initialDet, initialView, initialPick = null, initialMode = null }: {
   state: State; seriesByDataset: Record<string, SeriesMeta[]>;
   initialFile: string | null; initialDet: string[] | null; initialView: View | null;
   initialPick?: number | null;                     // an anomaly whose buffer is explained on arrival, for the first pinned detector
+  initialMode?: "best" | null;                     // ?show=best: arrive on Best coverage, one click from "Stitch winners"
 }) {
-  const b = state.benchmark;
+  const b = state.benchmark, L = state.L;
   const datasets = Object.keys(seriesByDataset);
   const k = `local:${b}:`;
   const firstFile = seriesByDataset.YAHOO?.find((s) => s.file.startsWith("682_"))?.file ?? seriesByDataset[datasets[0]]?.[0]?.file ?? "";
   const [file, setFile] = useRemembered(k + "file", firstFile, initialFile);
   const dataset = useMemo(() => datasets.find((d) => seriesByDataset[d].some((s) => s.file === file)) ?? datasets[0], [datasets, seriesByDataset, file]);
   const [tab, setTab] = useRemembered<"scores" | "map">(k + "tab", "scores");
-  const [mode, setMode] = useRemembered<Mode>(k + "mode", "top");
-  const [topK, setTopK] = useRemembered(k + "top", 5, initialDet ? 0 : null);
+  const [mode, setMode] = useRemembered<Mode>(k + "mode", "top", initialMode);
+  const [keptK, setTopK] = useRemembered(k + "top", 5);
+  // A link with pinned detectors shows only those (k = 0) without remembering it, so a later plain visit gets its lanes back.
+  const [deep, setDeep] = useState(!!initialDet);
+  const topK = deep ? 0 : keptK;
   const [sort, setSort] = useRemembered<Sort>(k + "sort", "auto");
   const [pins, setPins] = useState<string[]>(initialDet ?? []);
   const [data, setData] = useState<LocalSeries | null>(null);
@@ -53,12 +56,18 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
   const [picked, setPicked] = useState<{ detector: string; k: number } | null>(initialPick !== null && initialDet?.[0] ? { detector: initialDet[0], k: initialPick } : null);
   const [why, setWhy] = useState<{ a: Anomaly; curves: CurvesDoc } | null>(null);
 
-  // The series: its local table and its values.
+  // The scores of the series at the gear. A gear change keeps the view and the picked anomaly.
   useEffect(() => {
     let live = true;
-    setData(null); setDoc(null); setScores({}); setZoomed({ doc: null, scores: {} }); setHk(-1); setError(null); setOrc({ docs: {}, zoom: {}, busy: false });
+    setData(null); setError(null); setOrc({ docs: {}, zoom: {}, busy: false });
+    loadLocalSeries<LocalSeries>(b, file, L).then((d) => { if (live) { if (d) setData(d); else setError("No local table for this series."); } });
+    return () => { live = false; };
+  }, [b, file, L]);
+  // The series: its values.
+  useEffect(() => {
+    let live = true;
+    setDoc(null); setScores({}); setZoomed({ doc: null, scores: {} }); setHk(-1);
     if (firstView) setFirstView(false); else { setView(null); setHist([]); setPicked(null); }
-    loadLocalSeries<LocalSeries>(b, file).then((d) => { if (live) { if (d) setData(d); else setError("No local table for this series."); } });
     loadSeriesDoc(b, file).then((d) => { if (live && d) setDoc(d); });
     setAucpr({});
     loadAucPr(b, file).then((d) => { if (live && d) setAucpr(d); });
@@ -84,7 +93,7 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
     });
     const key = SORT_KEY[sort] ?? "gv";
     return r.sort((x, y) => (y[key] ?? -1) - (x[key] ?? -1));
-  }, [data, local, sort, aucpr]);
+  }, [data, local, sort, aucpr, L]);
 
   const best = useMemo(() => {
     if (!data || !local || !data.anomalies.length) return { set: new Set<string>(), winner: [] as string[] };
@@ -106,7 +115,7 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
   const stitch = () => {
     if (!best.winner.length) return;
     setOrc({ docs: {}, zoom: {}, busy: true });
-    Promise.all(NORMS.map(([nm]) => loadOracle(b, file, best.winner, nm))).then((ds) => {
+    Promise.all(NORMS.map(([nm]) => loadOracle(b, file, L, best.winner, nm))).then((ds) => {
       const docs: Oracles = {};
       ds.forEach((d, i) => { if (d) docs[NORMS[i][0]] = d; });
       setOrc({ docs, zoom: {}, busy: false });
@@ -118,10 +127,10 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
       const o = orc.docs[nm];
       if (!o) return [];
       const loc = o.auto;
-      return [{ name, norm: nm, loc, ap: o.aucpr, gv: o.autoG, vv: o.vusG[Math.min(L, o.vusG.length - 1)], lv: loc.reduce((s, x) => s + x, 0) / Math.max(1, loc.length) }];
+      return [{ name, id: `stitched:${nm}:${o.winners.join(",")}`, norm: nm, loc, ap: o.aucpr, gv: o.autoG, vv: o.vusG[Math.min(L, o.vusG.length - 1)], lv: loc.reduce((s, x) => s + x, 0) / Math.max(1, loc.length) }];
     });
-  }, [orc.docs, mode]);
-  const lanes: { name: string; norm?: OracleNorm; loc: number[]; ap?: number | null; gv: number; vv: number; lv: number }[] =
+  }, [orc.docs, mode, L]);
+  const lanes: { name: string; id?: string; norm?: OracleNorm; loc: number[]; ap?: number | null; gv: number; vv: number; lv: number }[] =
     [...oracleRows, ...shown];
   // The best row of each metric among the rows shown.
   const top = useMemo(() => {
@@ -145,11 +154,11 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
       for (const r of shown) loadScoreDoc(b, file, r.name, 2000, view).then((s) => { if (live && s) setZoomed((z) => ({ ...z, scores: { ...z.scores, [r.name]: s } })); });
       for (const [nm] of NORMS) {
         const o = orc.docs[nm];
-        if (o) loadOracle(b, file, o.winners, nm, 2000, view).then((d) => { if (live && d) setOrc((x) => ({ ...x, zoom: { ...x.zoom, [nm]: d } })); });
+        if (o) loadOracle(b, file, L, o.winners, nm, 2000, view).then((d) => { if (live && d) setOrc((x) => ({ ...x, zoom: { ...x.zoom, [nm]: d } })); });
       }
     }, 200);
     return () => { live = false; clearTimeout(t); };
-  }, [view, b, file, shown, orc.docs]);
+  }, [view, b, file, L, shown, orc.docs]);
   // Why this buffer: the clicked anomaly of one detector, scored live.
   useEffect(() => {
     setWhy(null);
@@ -159,7 +168,7 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
       if (live && sel && c && sel.anomalies[picked.k]) setWhy({ a: sel.anomalies[picked.k], curves: c });
     });
     return () => { live = false; };
-  }, [picked, b, file]);
+  }, [picked, b, file, L]);
   const pick = (detector: string, kk: number) => setPicked((p) => (p && p.detector === detector && p.k === kk ? null : { detector, k: kk }));
   const covers = (d: { start?: number; end?: number } | null | undefined) => !!(d && view && (d.start ?? 0) <= view[0] && (d.end ?? Infinity) >= view[1]);
 
@@ -245,7 +254,7 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
               )}
               {mode === "top" && (
                 <label className="muted" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>k
-                  <input type="number" className="input mono" min={0} max={32} value={topK} onChange={(e) => setTopK(Math.max(0, Math.min(32, Number(e.target.value) || 0)))} style={{ width: 56, height: 30, fontSize: 12 }} />
+                  <input type="number" className="input mono" min={0} max={32} value={topK} onChange={(e) => { setDeep(false); setTopK(Math.max(0, Math.min(32, Number(e.target.value) || 0))); }} style={{ width: 56, height: 30, fontSize: 12 }} />
                 </label>
               )}
               {hist.length > 0 && (
@@ -325,13 +334,14 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
             const lastOracle = isOracle && r === oracleRows[oracleRows.length - 1];
             const pinned = pins.includes(r.name);
             const sc = r.norm ? (covers(orc.zoom[r.norm]) ? orc.zoom[r.norm] : orc.docs[r.norm]) : covers(zoomed.scores[r.name]) ? zoomed.scores[r.name] : scores[r.name];
-            const chips = scored.map((a, i) => ({ a, left: pos[i], v: r.loc[a.k], ring: !isOracle && mode === "best" && best.winner[a.k] === r.name, on: !isOracle && picked?.detector === r.name && picked.k === a.k }));
-            const open = isOracle ? undefined : (kk: number) => ({ role: "button", tabIndex: 0, onClick: () => pick(r.name, kk), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") pick(r.name, kk); } });
-            const zones: Zone[] = isOracle ? [] : vis.map((a) => ({
-              from: a.s - L, to: a.e + 1 + L, color: "transparent", key: `z${a.k}`, selected: picked?.detector === r.name && picked.k === a.k,
-              onEnter: () => setHk(a.k), onLeave: () => setHk(-1), onClick: () => pick(r.name, a.k),
+            const id = r.id ?? r.name;   // what /select and /curves score: the detector, or the stitched spec
+            const chips = scored.map((a, i) => ({ a, left: pos[i], v: r.loc[a.k], ring: !isOracle && mode === "best" && best.winner[a.k] === r.name, on: picked?.detector === id && picked.k === a.k }));
+            const open = (kk: number) => ({ role: "button", tabIndex: 0, onClick: () => pick(id, kk), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") pick(id, kk); } });
+            const zones: Zone[] = vis.map((a) => ({
+              from: a.s - L, to: a.e + 1 + L, color: "transparent", key: `z${a.k}`, selected: picked?.detector === id && picked.k === a.k,
+              onEnter: () => setHk(a.k), onLeave: () => setHk(-1), onClick: () => pick(id, a.k),
             }));
-            const mine = !isOracle && picked?.detector === r.name ? picked : null;
+            const mine = picked?.detector === id ? picked : null;
             return (
               <Fragment key={r.name}>
               <div style={{ display: "grid", gridTemplateColumns: COLS, gap: "0 16px", alignItems: "center", borderBottom: lastOracle ? "2px solid var(--border)" : "1px solid var(--border-soft)", padding: isMap ? "6px 0" : "8px 0" }}>
@@ -350,8 +360,8 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
                           {chips.map(({ a, left, v, ring, on }) => {
                             const c = chipColors(v);
                             return (
-                              <span key={a.k} onMouseEnter={() => setHk(a.k)} onMouseLeave={() => setHk(-1)} className="mono" {...open?.(a.k)}
-                                style={{ position: "absolute", top: 0, left: `${left}%`, transform: "translateX(-50%)", height: 22, minWidth: 38, padding: "0 4px", boxSizing: "border-box", borderRadius: 4, display: "inline-flex", alignItems: "center", justifyContent: "center", background: c.bg, color: c.fg, opacity: dim(a.k), outline: on ? "2px solid var(--accent)" : ring ? "2px solid var(--ink)" : "none", outlineOffset: 1, fontSize: 12, fontWeight: 500, cursor: open ? "pointer" : undefined }}>
+                              <span key={a.k} onMouseEnter={() => setHk(a.k)} onMouseLeave={() => setHk(-1)} className="mono" {...open(a.k)}
+                                style={{ position: "absolute", top: 0, left: `${left}%`, transform: "translateX(-50%)", height: 22, minWidth: 38, padding: "0 4px", boxSizing: "border-box", borderRadius: 4, display: "inline-flex", alignItems: "center", justifyContent: "center", background: c.bg, color: c.fg, opacity: dim(a.k), outline: on ? "2px solid var(--accent)" : ring ? "2px solid var(--ink)" : "none", outlineOffset: 1, fontSize: 12, fontWeight: 500, cursor: "pointer" }}>
                                 {v.toFixed(2)}
                               </span>
                             );
@@ -376,8 +386,8 @@ export function LocalView({ state, seriesByDataset, initialFile, initialDet, ini
                     {chips.map(({ a, v, ring, on }) => {
                       const c = chipColors(v);
                       return (
-                        <span key={a.k} onMouseEnter={() => setHk(a.k)} onMouseLeave={() => setHk(-1)} className="mono" {...open?.(a.k)}
-                          style={{ height: 34, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", background: c.bg, color: c.fg, opacity: dim(a.k), outline: on ? "2px solid var(--accent)" : ring ? "2px solid var(--ink)" : "none", outlineOffset: -2, fontSize: 13, fontWeight: 500, cursor: open ? "pointer" : undefined }}>
+                        <span key={a.k} onMouseEnter={() => setHk(a.k)} onMouseLeave={() => setHk(-1)} className="mono" {...open(a.k)}
+                          style={{ height: 34, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", background: c.bg, color: c.fg, opacity: dim(a.k), outline: on ? "2px solid var(--accent)" : ring ? "2px solid var(--ink)" : "none", outlineOffset: -2, fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                           {v.toFixed(2)}
                         </span>
                       );

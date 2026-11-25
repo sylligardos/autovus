@@ -18,10 +18,10 @@ const FAMILIES: [string, string[]][] = [
   ["E · two blocks, both outside", ["E1"]],
 ];
 
-export function Toy() {
+export function Toy({ L }: { L: number }) {
   const [c, setC] = useRemembered("toy:case", "A4");
   const [doc, setDoc] = useState<ToyDoc | null>(null);
-  useEffect(() => { let live = true; loadToy(c, 20).then((d) => { if (live) setDoc(d); }); return () => { live = false; }; }, [c]);
+  useEffect(() => { let live = true; loadToy(c, L).then((d) => { if (live) setDoc(d); }); return () => { live = false; }; }, [c, L]);
   const T = 160, W = 520, H = 150;
   const x = (p: number) => (p / T) * W;
   const a = doc?.anomaly;
@@ -30,7 +30,7 @@ export function Toy() {
     <section className="panel" aria-label="How the buffer is chosen">
       <div className="panel-head">
         <h2>How the buffer is chosen, on 24 toy cases</h2>
-        <span className="muted" style={{ fontSize: 12 }}>one anomaly of 20 points, a block detector · L = 20</span>
+        <span className="muted" style={{ fontSize: 12 }}>one anomaly of 20 points, a block detector · L = {L}</span>
       </div>
       {FAMILIES.map(([name, cases]) => (
         <div key={name} style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontSize: 12 }}>
@@ -46,7 +46,7 @@ export function Toy() {
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(0, 5fr) minmax(0, 3fr)", gap: 16 }}>
             {before ? (
               <LineChart x={doc.buffers} title={`before · ratio · b* = ${before.b}`} height={H}
-                lines={[{ y: before.rule_curve, color: BEFORE, width: 1.8 }]} mark={before.b} dot={{ line: 0, i: before.idx }} left="b = 0" right="20" />
+                lines={[{ y: before.rule_curve, color: BEFORE, width: 1.8 }]} mark={before.b} dot={{ line: 0, i: before.idx }} left="b = 0" right={String(L)} />
             ) : <span />}
             <figure style={{ margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
               <figcaption className="muted" style={{ fontSize: 12 }}>score · label · buffers</figcaption>
@@ -62,7 +62,7 @@ export function Toy() {
             </figure>
             {after ? (
               <LineChart x={doc.buffers} title={`after · ratio · b* = ${after.b}`} height={H}
-                lines={[{ y: after.rule_curve, color: AFTER, width: 1.8 }]} mark={after.b} dot={{ line: 0, i: after.idx }} left="b = 0" right="20" />
+                lines={[{ y: after.rule_curve, color: AFTER, width: 1.8 }]} mark={after.b} dot={{ line: 0, i: after.idx }} left="b = 0" right={String(L)} />
             ) : <span />}
           </div>
         </>

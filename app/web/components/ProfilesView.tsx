@@ -179,7 +179,7 @@ function DatasetSelect({ index, dataset, setDataset }: { index: ProfilesIndex; d
   return (
     <label className="field"><span>Dataset</span>
       <select className="select mono" value={dataset} onChange={(e) => setDataset(e.target.value)}>
-        {index.map((x) => <option key={x.dataset} value={x.dataset}>{x.dataset} · {fmt(x.anomalies)} anomalies{x.too_many ? "" : ` · ${x.profiles} profiles`}</option>)}
+        {index.map((x) => <option key={x.dataset} value={x.dataset}>{x.dataset} · {fmt(x.anomalies)} anomalies{x.too_many ? "" : ` · ${x.profiles} profile${x.profiles === 1 ? "" : "s"} · stability ${Math.round((x.stability ?? 0) * 100)}%`}</option>)}
       </select>
     </label>
   );
@@ -192,9 +192,9 @@ export function ProfilesView({ state }: { state: State }) {
   const [dataset, setDataset] = useRemembered<string | null>(`profiles:${b}:dataset`, null);
   useEffect(() => {
     let live = true;
-    loadProfilesIndex<ProfilesIndex>(b).then((x) => { if (live) setIndex(x); });
+    loadProfilesIndex<ProfilesIndex>(b, state.L).then((x) => { if (live) setIndex(x); });
     return () => { live = false; };
-  }, [b]);
+  }, [b, state.L]);
   if (index === undefined) return <p className="muted">Loading…</p>;
   if (index === null || !index.length) return <p className="muted">Not exported. Run <code className="mono">app/export_profiles.py</code>.</p>;
   const current = index.some((x) => x.dataset === dataset) ? dataset! : index.find((x) => x.dataset === "YAHOO")?.dataset ?? index[0].dataset;
@@ -211,7 +211,7 @@ export function ProfilesView({ state }: { state: State }) {
       </section>
     </main>
   );
-  return <ProfilesMap key={`${b}:${current}`} state={state} index={index} dataset={current} setDataset={setDataset} />;
+  return <ProfilesMap key={`${b}:${state.L}:${current}`} state={state} index={index} dataset={current} setDataset={setDataset} />;
 }
 
 function ProfilesMap({ state, index, dataset, setDataset }: { state: State; index: ProfilesIndex; dataset: string; setDataset: (d: string) => void }) {
@@ -233,9 +233,9 @@ function ProfilesMap({ state, index, dataset, setDataset }: { state: State; inde
 
   useEffect(() => {
     let live = true;
-    loadProfiles<ProfilesTable>(b, dataset).then((x) => { if (live) setT(x); });
+    loadProfiles<ProfilesTable>(b, dataset, state.L).then((x) => { if (live) setT(x); });
     return () => { live = false; };
-  }, [b, dataset]);
+  }, [b, dataset, state.L]);
 
   const zoomBy = useCallback((f: number, mx = W / 2, my = H / 2) => setTf((v) => {
     const s = Math.min(40, Math.max(0.5, v.s * f)), k = s / v.s;

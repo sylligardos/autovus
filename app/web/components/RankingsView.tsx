@@ -13,7 +13,7 @@ import { useRemembered } from "@/lib/remember";
 import { SeriesPair } from "./SeriesPair";
 
 const ROW = 18, HEAD = 22, AXIS = 14;
-// L=20 table (app/export_rankings20.py): AutoVUS, VUS-PR and AUC-PR; references = the oracle and the stitched score.
+// The table of the gear (app/export_gear.py): AutoVUS, VUS-PR and AUC-PR; references = the oracle and the stitched score.
 // Two more from the local export (cover.json): AutoVUS Local, as its mean over the anomalies of a series
 // (one value per series) and as it is (one value per anomaly). The references have no local scores.
 type RKey = MetricKey | "local" | "local_anomaly";
@@ -61,9 +61,9 @@ export function RankingsView({ state, tables: packed, initial }: { state: State;
   const [cover, setCover] = useState<CoverTable | null>(null);
   useEffect(() => {
     let live = true;
-    loadLocalTable<CoverTable>(state.benchmark, "cover").then((c) => { if (live) setCover(c); });
+    loadLocalTable<CoverTable>(state.benchmark, "cover", state.L).then((c) => { if (live) setCover(c); });
     return () => { live = false; };
-  }, [state.benchmark]);
+  }, [state.benchmark, state.L]);
   // Every row with its local scores (per anomaly, in hundredths in cover.json; -999 = no score).
   const xrows = useMemo<XRow[]>(() => {
     const at = new Map<string, number[]>();

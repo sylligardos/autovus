@@ -99,7 +99,15 @@ h1, h2, h3 { margin: 0; }
   background: var(--topbar-ctrl); color: var(--topbar-ink); font-size: 12px; cursor: pointer;
 }
 .topbar .select { padding: 0 10px; }
+.gear { display: flex; align-items: center; height: 30px; border: 1px solid var(--topbar-border); border-radius: 6px; overflow: hidden; font-size: 12px; }
+.gear span { padding: 0 8px; color: var(--topbar-muted); }
+.gear button { height: 100%; padding: 0 10px; border: 0; background: var(--topbar-ctrl); color: var(--topbar-ink); font-family: var(--mono); font-size: 12px; cursor: pointer; }
+.gear button[aria-pressed="true"] { background: var(--topbar-ink); color: var(--topbar); font-weight: 600; }
 .topbar .icon-btn { width: 30px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+.play-btn { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 14px; margin-right: 8px; border-radius: 999px; background: var(--accent); color: #FFFFFF; font-size: 13px; font-weight: 600; text-decoration: none; }
+.play-btn:hover { color: #FFFFFF; filter: brightness(1.1); }
+.play-btn[aria-current="page"] { box-shadow: 0 0 0 2px var(--topbar), 0 0 0 4px var(--accent); }
+.play-cta { align-self: flex-start; height: 40px; padding: 0 18px; margin: 8px 0 0; font-size: 14px; }
 
 /* page: rail + content */
 .page {
@@ -199,3 +207,32 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .pf-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: #FFFFFF; font-weight: 700; font-size: 12px; }
 .pf-link { padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; min-width: 0; }
 .pf-link:hover { color: var(--accent); }
+
+/* play landing: the two game tiles (a link each), their looping sketches, the pressable button, the played pills */
+.door { display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink); transition: transform 0.25s ease; }
+.door:hover { transform: translateY(-6px); color: var(--ink); }
+.press { display: flex; align-items: stretch; height: 48px; border-radius: 10px; color: #FFFFFF; overflow: hidden; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.door:active .press { transform: translateY(4px); box-shadow: 0 0 0 transparent, 0 2px 6px rgba(0, 0, 0, 0.16) !important; }
+.press .ico { width: 56px; display: inline-flex; align-items: center; justify-content: center; }
+.press .ico svg { transition: transform 0.25s ease; }
+.door:hover .ico svg { animation: play-nudge 0.6s ease-in-out infinite; }
+.door:hover .ico-pen svg { animation: play-wiggle 0.7s ease-in-out infinite; transform-origin: 30% 80%; }
+.play-edge { animation: play-slide 3.6s ease-in-out infinite; }
+.play-zone { transform-box: fill-box; transform-origin: left center; animation: play-grow 3.6s ease-in-out infinite; }
+.play-gain { animation: play-pulse 3.6s ease-in-out infinite; }
+.play-ink { stroke-dasharray: 1200; animation: play-draw 5s ease-in-out infinite; }
+.play-pen { offset-path: path("M0,112 C40,114 60,104 86,100 C104,96 110,70 126,68 C144,66 150,96 172,100 C206,106 240,108 274,108 C298,108 312,106 334,104 C358,100 370,66 394,62 C418,58 432,84 452,98 C472,110 500,112 520,112"); offset-rotate: 0deg; animation: play-pen 5s ease-in-out infinite; }
+.play-buf { transform-box: fill-box; transform-origin: center bottom; animation: play-pop 5s ease-in-out infinite; }
+@keyframes play-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(4px); } }
+@keyframes play-wiggle { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(-14deg); } 60% { transform: rotate(10deg); } }
+@keyframes play-slide { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(74px); } }
+@keyframes play-grow { 0%, 100% { transform: scaleX(0.05); } 50% { transform: scaleX(1); } }
+@keyframes play-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes play-draw { 0% { stroke-dashoffset: 1200; } 55%, 100% { stroke-dashoffset: 0; } }
+@keyframes play-pen { 0% { offset-distance: 0%; } 55%, 100% { offset-distance: 100%; } }
+@keyframes play-pop { 0%, 50% { opacity: 0; transform: scaleY(0.6); } 62%, 100% { opacity: 1; transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .play-edge, .play-zone, .play-gain, .play-ink, .play-pen, .play-buf, .door:hover .ico svg, .door:hover .ico-pen svg { animation: none; }
+  .play-ink { stroke-dasharray: none; }
+}
+.pill { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 999px; font-size: 13px; white-space: nowrap; }

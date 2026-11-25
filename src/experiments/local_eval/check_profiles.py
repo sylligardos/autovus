@@ -36,10 +36,11 @@ FOUND = 0.20      # found: local AutoVUS at least this (the Coverage default)
 SEEDS = range(10)
 
 
-def load(benchmark, dataset):
+def load(benchmark, dataset, tables='local'):
     """Scores (anomalies x detectors), and per anomaly its series (index into names) and its index in the series.
-    The detectors in EXCLUDE are left out; then the anomalies that still miss a run are left out."""
-    d = json.load(open(ROOT / 'app' / 'data' / benchmark / 'local' / 'cover.json'))
+    The detectors in EXCLUDE are left out; then the anomalies that still miss a run are left out.
+    tables: the folder of cover.json under app/data/<benchmark>/ ('local', or 'L20' / 'L128' for a gear)."""
+    d = json.load(open(ROOT / 'app' / 'data' / benchmark / tables / 'cover.json'))
     D = len(d['detectors'])
     X, series, k = [], [], []
     for i, name in enumerate(d['series']):

@@ -13,12 +13,12 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
   const state = stateFrom(await searchParams);
   const summary = await loadSummary(state.benchmark);
   const speed = await loadLocalTable<SpeedTable>(state.benchmark, "speed");
-  // The four questions of the demo, in the order of the top bar.
+  // The four pages in the order of the top bar, each with the question on top of its page. The game is the button under the headline.
   const cards = [
-    { n: "01", q: "Why should the buffer follow the detection?", title: "Play", text: "One anomaly, one detection. Set the buffer it deserves on each side, then see the one AutoVUS picks.", cta: "Play 6 rounds", to: href("/play", state) },
-    { n: "02", q: "How does AutoVUS find the lag?", title: "Explore", text: "One series, every detector as a lane, a score on every anomaly. Click one to see why its buffer was chosen.", cta: "Open a series", to: href("/local", state) },
-    { n: "03", q: "What changes against current metrics?", title: "Rankings", text: "Two metrics side by side on the whole benchmark, every rank move drawn between them.", cta: "AUC-PR to AutoVUS", to: href("/rankings", state) },
-    { n: "04", q: "Where can this go?", title: "Coverage", text: "AutoVUS per anomaly: the best detector changes from one anomaly to the next. What a choice per anomaly would gain.", cta: "Best detector per anomaly", to: href("/coverage", state) },
+    { n: "01", q: "How well does each detector find every anomaly of a series?", title: "Explore", text: "One series, one lane per detector, a score on every anomaly. Click a score to see why its buffer was chosen.", cta: "Open a series", to: href("/local", state) },
+    { n: "02", q: "Where do a series and its anomalies disagree?", title: "Cases", text: "Every detector on every series as a point, placed by its score on the whole series and its scores on the anomalies. A click opens the series.", cta: "Find a case", to: href("/cases", state) },
+    { n: "03", q: "Which detectors change rank when the metric changes?", title: "Rankings", text: "Two metrics side by side on the whole benchmark, every rank move drawn between them.", cta: "AUC-PR to AutoVUS", to: href("/rankings", state) },
+    { n: "04", q: "Which kinds of anomalies does a dataset hold, and which detectors cover them?", title: "Profiles", text: "The anomalies of a dataset grouped by the detectors that find them, and the three detectors that cover it.", cta: "Open the profiles", to: href("/profiles", state) },
   ];
   return (
     <>
@@ -27,14 +27,18 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
         <section style={{ display: "flex", flexWrap: "wrap", gap: 32, alignItems: "flex-end", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: "46em" }}>
             <span className="eyebrow">ICDE 2027 demo</span>
-            <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.015em", lineHeight: 1.15 }}>A buffer for every anomaly, chosen by the detector&apos;s own lag.</h1>
-            <p className="muted" style={{ margin: 0, fontSize: 15 }}>VUS scores a detector with one buffer around every labelled anomaly. AutoVUS picks the buffer per anomaly, as wide as the detection needs, and charges the detector for the width. FastVUS makes that affordable on a whole benchmark.</p>
+            <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.015em", lineHeight: 1.15 }}>Every anomaly counts. A score for each anomaly of a time series.</h1>
+            <p className="muted" style={{ margin: 0, fontSize: 15 }}>AUC and VUS give a detector one value per time series, which does not tell how well each anomaly was detected. AutoVUS gives every detection the buffer it needs, and local AutoVUS adds a score per anomaly, with no threshold.</p>
             <p style={{ margin: "4px 0 0", fontSize: 13 }}>
               {AUTHORS.map(([name, marks], k) => <span key={name}>{k > 0 && ", "}{name}<sup className="muted">{marks}</sup></span>)}
             </p>
             <p className="muted" style={{ margin: 0, fontSize: 12 }}>
               {AFFILIATIONS.map(([mark, place], k) => <span key={mark}>{k > 0 && " · "}<sup>{mark}</sup>{place}</span>)}
             </p>
+            <Link href={href("/play", state)} className="play-btn play-cta">
+              <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 0.5v9l8-4.5z" fill="currentColor" /></svg>
+              Play the game, set the buffer and see the one AutoVUS picks
+            </Link>
           </div>
           {summary ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 130px)", gap: 10 }}>
@@ -58,11 +62,11 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
           ))}
         </section>
         {speed && <SpeedBox state={state} speed={speed} />}
-        {summary && <Toy />}
+        {summary && <Toy L={state.L} />}
         <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }} aria-label="Vocabulary">
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">VUS</span><span className="muted" style={{ fontSize: 13 }}>The volume under the surface of the PR or ROC curve over every buffer from 0 to L. One buffer grid for every anomaly of the series.</span></div>
           <div className="panel" style={{ gap: 6 }}><span className="eyebrow">FastVUS, the engine</span><span className="muted" style={{ fontSize: 13 }}>The same volume, computed once for all buffers at once. Exact on the CPU. On the GPU every term is exact except the existence term, which is approximated.</span></div>
-          <div className="panel panel-accent" style={{ gap: 6 }}><span className="eyebrow" style={{ color: "var(--accent)" }}>AutoVUS, the metric</span><span className="muted" style={{ fontSize: 13 }}>For every anomaly, one buffer for both sides, where the detector&apos;s gain over a random score peaks. The score is chance-adjusted, so a wide buffer costs.</span></div>
+          <div className="panel panel-accent" style={{ gap: 6 }}><span className="eyebrow" style={{ color: "var(--accent)" }}>AutoVUS, the metric</span><span className="muted" style={{ fontSize: 13 }}>For every anomaly, one buffer on each side, where the detector&apos;s gain over a random score peaks. The score is chance-adjusted, so a wide buffer costs.</span></div>
         </section>
       </main>
       <footer className="muted" style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", fontSize: 12, display: "flex", gap: 16 }}><span>[Code]</span><span>[Data]</span><span>[Paper]</span></footer>
