@@ -27,7 +27,7 @@ export default async function Intro({ searchParams }: { searchParams: Promise<Re
         <section style={{ display: "flex", flexWrap: "wrap", gap: 32, alignItems: "flex-end", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: "46em" }}>
             <span className="eyebrow">ICDE 2027 demo</span>
-            <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.015em", lineHeight: 1.15 }}>Every Anomaly Counts:<br />Exploring Per-Anomaly Evaluation for Time Series with AutoVUS</h1>
+            <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.015em", lineHeight: 1.15 }}><i>Protagonist</i>:<br />Exploring Per-Anomaly Evaluation for Time Series with AutoVUS</h1>
             <p className="muted" style={{ margin: 0, fontSize: 15 }}>AUC and VUS give a detector one value per time series, which does not tell how well each anomaly was detected. AutoVUS gives every detection the buffer it needs, and local AutoVUS adds a score per anomaly, with no threshold.</p>
             <p style={{ margin: "4px 0 0", fontSize: 13 }}>
               {AUTHORS.map(([name, marks], k) => <span key={name}>{k > 0 && ", "}{name}<sup className="muted">{marks}</sup></span>)}
